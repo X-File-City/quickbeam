@@ -225,11 +225,8 @@ defmodule QuickBEAM.Runtime do
     {:noreply, state}
   end
 
-  def handle_info({:beam_message, _name, _message}, state) do
-    {:noreply, state}
-  end
-
-  def handle_info(_msg, state) do
+  def handle_info(msg, state) do
+    QuickBEAM.Native.send_message(state.resource, msg)
     {:noreply, state}
   end
 
