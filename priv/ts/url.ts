@@ -18,46 +18,31 @@ interface URLParseResult {
 
 const ORIGIN_SCHEMES = ["http:", "https:", "ftp:", "ws:", "wss:"];
 
-function encodeComponent(s: string): string {
-  return encodeURIComponent(s)
-    .replace(/%20/g, "+")
-    .replace(/!/g, "%21")
-    .replace(/'/g, "%27")
-    .replace(/\(/g, "%28")
-    .replace(/\)/g, "%29")
-    .replace(/~/g, "%7E");
-}
-
 class QBURLSearchParams {
-  #entries: [string, string][] = [];
+  #entries: [string, string][];
   _url: QBURL | null = null;
 
   constructor(init?: string | string[][] | Record<string, string>) {
     if (typeof init === "string") {
-      const s = init.startsWith("?") ? init.slice(1) : init;
-      for (const pair of s.split("&")) {
-        if (pair === "") continue;
-        const eq = pair.indexOf("=");
-        if (eq === -1) {
-          this.#entries.push([decodeURIComponent(pair.replace(/\+/g, " ")), ""]);
-        } else {
-          this.#entries.push([
-            decodeURIComponent(pair.slice(0, eq).replace(/\+/g, " ")),
-            decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, " ")),
-          ]);
-        }
-      }
+      const qs = init.startsWith("?") ? init.slice(1) : init;
+      this.#entries = qs === ""
+        ? []
+        : (beam.callSync("__url_dissect_query", qs) as [string, string][]);
     } else if (Array.isArray(init)) {
-      for (const pair of init) {
+      this.#entries = init.map((pair) => {
         if (pair.length !== 2) {
-          throw new TypeError("Each pair must be an iterable with exactly two elements");
+          throw new TypeError(
+            "Each pair must be an iterable with exactly two elements",
+          );
         }
-        this.#entries.push([String(pair[0]), String(pair[1])]);
-      }
+        return [String(pair[0]), String(pair[1])] as [string, string];
+      });
     } else if (init !== undefined) {
-      for (const key of Object.keys(init)) {
-        this.#entries.push([key, String(init[key])]);
-      }
+      this.#entries = Object.keys(init).map(
+        (k) => [k, String(init[k])] as [string, string],
+      );
+    } else {
+      this.#entries = [];
     }
   }
 
@@ -69,7 +54,9 @@ class QBURLSearchParams {
   delete(name: string, value?: string): void {
     if (value !== undefined) {
       const v = String(value);
-      this.#entries = this.#entries.filter((e) => !(e[0] === name && e[1] === v));
+      this.#entries = this.#entries.filter(
+        (e) => !(e[0] === name && e[1] === v),
+      );
     } else {
       this.#entries = this.#entries.filter((e) => e[0] !== name);
     }
@@ -112,7 +99,8 @@ class QBURLSearchParams {
   }
 
   toString(): string {
-    return this.#entries.map(([k, v]) => encodeComponent(k) + "=" + encodeComponent(v)).join("&");
+    if (this.#entries.length === 0) return "";
+    return beam.callSync("__url_compose_query", this.#entries) as string;
   }
 
   forEach(
@@ -151,7 +139,8 @@ class QBURL {
   #searchParams: QBURLSearchParams;
 
   constructor(url: string, base?: string) {
-    const args = base !== undefined ? [String(url), String(base)] : [String(url)];
+    const args =
+      base !== undefined ? [String(url), String(base)] : [String(url)];
     const result = beam.callSync("__url_parse", ...args) as URLParseResult;
     if (!result.ok) throw new TypeError(`Invalid URL: '${url}'`);
     this.#components = result.components;
@@ -177,7 +166,9 @@ class QBURL {
     return this.#components.protocol;
   }
   set protocol(v: string) {
-    this.#components.protocol = String(v).endsWith(":") ? String(v) : String(v) + ":";
+    this.#components.protocol = String(v).endsWith(":")
+      ? String(v)
+      : String(v) + ":";
     this.#recompose();
   }
 
@@ -199,7 +190,9 @@ class QBURL {
 
   get host(): string {
     const port = this.#components.port;
-    return port ? this.#components.hostname + ":" + port : this.#components.hostname;
+    return port
+      ? this.#components.hostname + ":" + port
+      : this.#components.hostname;
   }
   set host(v: string) {
     const s = String(v);
@@ -226,7 +219,8 @@ class QBURL {
     return this.#components.port;
   }
   set port(v: string | undefined) {
-    this.#components.port = v === "" || v === undefined ? "" : String(parseInt(v, 10));
+    this.#components.port =
+      v === "" || v === undefined ? "" : String(parseInt(v, 10));
     this.#recompose();
   }
 
@@ -243,7 +237,8 @@ class QBURL {
   }
   set search(v: string) {
     const s = String(v);
-    this.#components.search = s === "" ? "" : (s.startsWith("?") ? s : "?" + s);
+    this.#components.search =
+      s === "" ? "" : (s.startsWith("?") ? s : "?" + s);
     this.#searchParams = new QBURLSearchParams(this.#components.search);
     this.#searchParams._url = this;
     this.#recompose();
@@ -254,7 +249,8 @@ class QBURL {
   }
   set hash(v: string) {
     const s = String(v);
-    this.#components.hash = s === "" ? "" : (s.startsWith("#") ? s : "#" + s);
+    this.#components.hash =
+      s === "" ? "" : (s.startsWith("#") ? s : "#" + s);
     this.#recompose();
   }
 
@@ -275,7 +271,10 @@ class QBURL {
   }
 
   #recompose(): void {
-    const href = beam.callSync("__url_recompose", this.#components) as string;
+    const href = beam.callSync(
+      "__url_recompose",
+      this.#components,
+    ) as string;
     this.#components.href = href;
     this.#components.origin = this.#buildOrigin();
   }

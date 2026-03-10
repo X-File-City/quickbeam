@@ -31,6 +31,21 @@ defmodule QuickBEAM.URL do
     do_recompose(components)
   end
 
+  def dissect_query([qs]) when is_binary(qs) do
+    qs
+    |> :uri_string.dissect_query()
+    |> Enum.map(fn
+      {k, true} -> [to_string(k), ""]
+      {k, v} -> [to_string(k), to_string(v)]
+    end)
+  end
+
+  def compose_query([entries]) when is_list(entries) do
+    entries
+    |> Enum.map(fn [k, v] -> {k, v} end)
+    |> :uri_string.compose_query()
+  end
+
   defp resolve_and_parse(input, nil) do
     parse_absolute(input)
   end

@@ -50,6 +50,8 @@ defmodule QuickBEAM.Runtime do
   @builtin_handlers %{
     "__url_parse" => &QuickBEAM.URL.parse/1,
     "__url_recompose" => &QuickBEAM.URL.recompose/1,
+    "__url_dissect_query" => &QuickBEAM.URL.dissect_query/1,
+    "__url_compose_query" => &QuickBEAM.URL.compose_query/1,
     "__crypto_digest" => &QuickBEAM.SubtleCrypto.digest/1,
     "__crypto_generate_key" => &QuickBEAM.SubtleCrypto.generate_key/1,
     "__crypto_sign" => &QuickBEAM.SubtleCrypto.sign/1,

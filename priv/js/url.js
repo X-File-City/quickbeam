@@ -1,40 +1,25 @@
 (() => {
   // priv/ts/url.ts
   var ORIGIN_SCHEMES = ["http:", "https:", "ftp:", "ws:", "wss:"];
-  function encodeComponent(s) {
-    return encodeURIComponent(s).replace(/%20/g, "+").replace(/!/g, "%21").replace(/'/g, "%27").replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/~/g, "%7E");
-  }
 
   class QBURLSearchParams {
-    #entries = [];
+    #entries;
     _url = null;
     constructor(init) {
       if (typeof init === "string") {
-        const s = init.startsWith("?") ? init.slice(1) : init;
-        for (const pair of s.split("&")) {
-          if (pair === "")
-            continue;
-          const eq = pair.indexOf("=");
-          if (eq === -1) {
-            this.#entries.push([decodeURIComponent(pair.replace(/\+/g, " ")), ""]);
-          } else {
-            this.#entries.push([
-              decodeURIComponent(pair.slice(0, eq).replace(/\+/g, " ")),
-              decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, " "))
-            ]);
-          }
-        }
+        const qs = init.startsWith("?") ? init.slice(1) : init;
+        this.#entries = qs === "" ? [] : beam.callSync("__url_dissect_query", qs);
       } else if (Array.isArray(init)) {
-        for (const pair of init) {
+        this.#entries = init.map((pair) => {
           if (pair.length !== 2) {
             throw new TypeError("Each pair must be an iterable with exactly two elements");
           }
-          this.#entries.push([String(pair[0]), String(pair[1])]);
-        }
+          return [String(pair[0]), String(pair[1])];
+        });
       } else if (init !== undefined) {
-        for (const key of Object.keys(init)) {
-          this.#entries.push([key, String(init[key])]);
-        }
+        this.#entries = Object.keys(init).map((k) => [k, String(init[k])]);
+      } else {
+        this.#entries = [];
       }
     }
     append(name, value) {
@@ -81,7 +66,9 @@
       this.#update();
     }
     toString() {
-      return this.#entries.map(([k, v]) => encodeComponent(k) + "=" + encodeComponent(v)).join("&");
+      if (this.#entries.length === 0)
+        return "";
+      return beam.callSync("__url_compose_query", this.#entries);
     }
     forEach(callback, thisArg) {
       for (const [name, value] of this.#entries) {
