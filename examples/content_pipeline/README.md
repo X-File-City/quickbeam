@@ -15,12 +15,17 @@ Each stage is isolated. Kill any one — the supervisor restarts it, the others 
 elixir pipeline.exs
 ```
 
-## Output
-
 ```
 1 | Hello World (6 words)
 2 [SPAM] | Buy Now! Free Money!!! (7 words)
 3 | QuickBEAM Release (5 words)
+```
+
+## Test
+
+```sh
+mix deps.get
+mix test
 ```
 
 ## How it works

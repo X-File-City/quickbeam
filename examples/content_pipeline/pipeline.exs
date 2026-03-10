@@ -1,9 +1,5 @@
 Mix.install([{:quickbeam, path: "../.."}])
 
-# Each stage is a supervised JS runtime.
-# Kill any one of them — the supervisor restarts it,
-# the others keep running.
-
 dir = __DIR__
 
 forward = fn [stage, msg] ->
@@ -13,15 +9,15 @@ end
 children = [
   {QuickBEAM,
    name: :sanitizer, id: :sanitizer,
-   script: Path.join(dir, "sanitizer.js"),
+   script: Path.join(dir, "priv/js/sanitizer.js"),
    handlers: %{"forward" => forward}},
   {QuickBEAM,
    name: :classifier, id: :classifier,
-   script: Path.join(dir, "classifier.js"),
+   script: Path.join(dir, "priv/js/classifier.js"),
    handlers: %{"forward" => forward}},
   {QuickBEAM,
    name: :enricher, id: :enricher,
-   script: Path.join(dir, "enricher.js"),
+   script: Path.join(dir, "priv/js/enricher.js"),
    handlers: %{
      "done" => fn [result] -> send(:pipeline, {:done, result}) end
    }}
@@ -36,9 +32,7 @@ posts = [
   %{id: 3, title: "QuickBEAM Release", body: "JS runtimes as BEAM processes.", author: "bob"},
 ]
 
-for post <- posts do
-  QuickBEAM.send_message(:sanitizer, post)
-end
+for post <- posts, do: QuickBEAM.send_message(:sanitizer, post)
 
 for _ <- posts do
   receive do
