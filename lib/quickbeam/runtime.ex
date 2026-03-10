@@ -72,6 +72,9 @@ defmodule QuickBEAM.Runtime do
     "__compress" => &QuickBEAM.Compression.compress/1,
     "__decompress" => &QuickBEAM.Compression.decompress/1,
     "__fetch" => &QuickBEAM.Fetch.fetch/1,
+    "__buffer_encode" => &QuickBEAM.Buffer.encode/1,
+    "__buffer_decode" => &QuickBEAM.Buffer.decode/1,
+    "__buffer_byte_length" => &QuickBEAM.Buffer.byte_length/1,
     # {:with_caller, fun/2} — receives [args, caller_pid] instead of [args]
     "__broadcast_join" => {:with_caller, &QuickBEAM.BroadcastChannel.join/2},
     "__broadcast_post" => {:with_caller, &QuickBEAM.BroadcastChannel.post/2},
@@ -84,6 +87,7 @@ defmodule QuickBEAM.Runtime do
     url
     crypto-subtle
     compression
+    buffer
     web-apis
   ]
 
