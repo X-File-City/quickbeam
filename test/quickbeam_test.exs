@@ -250,66 +250,40 @@ defmodule QuickBEAMTest do
       QuickBEAM.stop(rt)
     end
 
-    test "globals includes user-defined names" do
+    test "globals with user_only: true excludes builtins" do
       {:ok, rt} = QuickBEAM.start()
-      QuickBEAM.eval(rt, "globalThis.myThing = 123")
-      {:ok, globals} = QuickBEAM.globals(rt)
-      assert "myThing" in globals
+      {:ok, empty} = QuickBEAM.globals(rt, user_only: true)
+      assert empty == []
+
+      QuickBEAM.eval(rt, "globalThis.myThing = 123; globalThis.myOther = 'hi'")
+      {:ok, user} = QuickBEAM.globals(rt, user_only: true)
+      assert "myThing" in user
+      assert "myOther" in user
+      refute "Object" in user
+      refute "console" in user
       QuickBEAM.stop(rt)
     end
 
-    test "inspect_global returns type and value for primitives" do
+    test "get_global returns primitive values" do
       {:ok, rt} = QuickBEAM.start()
       QuickBEAM.eval(rt, "globalThis.n = 42; globalThis.s = 'hello'; globalThis.b = true")
 
-      assert {:ok, %{name: "n", type: "number", value: 42}} =
-               QuickBEAM.inspect_global(rt, "n")
-
-      assert {:ok, %{name: "s", type: "string", value: "hello"}} =
-               QuickBEAM.inspect_global(rt, "s")
-
-      assert {:ok, %{name: "b", type: "boolean", value: true}} =
-               QuickBEAM.inspect_global(rt, "b")
-
+      assert {:ok, 42} = QuickBEAM.get_global(rt, "n")
+      assert {:ok, "hello"} = QuickBEAM.get_global(rt, "s")
+      assert {:ok, true} = QuickBEAM.get_global(rt, "b")
       QuickBEAM.stop(rt)
     end
 
-    test "inspect_global returns properties for objects" do
+    test "get_global returns nil for undefined" do
       {:ok, rt} = QuickBEAM.start()
-      QuickBEAM.eval(rt, "globalThis.obj = { x: 1, y: 2, z: 3 }")
-
-      assert {:ok, %{name: "obj", type: "object", properties: ["x", "y", "z"]}} =
-               QuickBEAM.inspect_global(rt, "obj")
-
+      assert {:ok, nil} = QuickBEAM.get_global(rt, "nonexistent")
       QuickBEAM.stop(rt)
     end
 
-    test "inspect_global returns kind and length for functions" do
+    test "get_global returns map for objects" do
       {:ok, rt} = QuickBEAM.start()
-      QuickBEAM.eval(rt, "globalThis.fn = function(a, b, c) {}")
-
-      assert {:ok, %{name: "fn", type: "function", kind: "function", length: 3}} =
-               QuickBEAM.inspect_global(rt, "fn")
-
-      QuickBEAM.stop(rt)
-    end
-
-    test "inspect_global detects classes" do
-      {:ok, rt} = QuickBEAM.start()
-      QuickBEAM.eval(rt, "globalThis.MyClass = class { constructor(x) { this.x = x } }")
-
-      assert {:ok, %{name: "MyClass", type: "function", kind: "class", length: 1}} =
-               QuickBEAM.inspect_global(rt, "MyClass")
-
-      QuickBEAM.stop(rt)
-    end
-
-    test "inspect_global handles undefined" do
-      {:ok, rt} = QuickBEAM.start()
-
-      assert {:ok, %{name: "nonexistent", type: "undefined"}} =
-               QuickBEAM.inspect_global(rt, "nonexistent")
-
+      QuickBEAM.eval(rt, "globalThis.obj = { x: 1, y: 2 }")
+      assert {:ok, %{"x" => 1, "y" => 2}} = QuickBEAM.get_global(rt, "obj")
       QuickBEAM.stop(rt)
     end
   end

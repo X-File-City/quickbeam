@@ -148,10 +148,18 @@ defmodule QuickBEAM.Runtime do
     end
   end
 
+  @snapshot_builtins_js """
+  globalThis.__qb_builtins = Object.create(null);
+  for (const k of Object.getOwnPropertyNames(globalThis))
+    globalThis.__qb_builtins[k] = true;
+  """
+
   defp install_builtins(state) do
     for js <- @builtin_js do
       QuickBEAM.Native.eval(state.resource, js)
     end
+
+    QuickBEAM.Native.eval(state.resource, @snapshot_builtins_js)
   end
 
   @impl true

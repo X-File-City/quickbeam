@@ -181,61 +181,57 @@ defmodule QuickBEAM do
     QuickBEAM.Runtime.send_message(runtime, message)
   end
 
-  @doc """
-  List all global names defined in the JS context.
-
-  Returns `{:ok, [name]}` — a sorted list of all `globalThis` property names.
+  @user_globals_js """
+  (() => {
+    const names = Object.getOwnPropertyNames(globalThis).sort();
+    return names.filter(k => !k.startsWith("__qb_") && !(k in globalThis.__qb_builtins));
+  })()
   """
-  @spec globals(runtime()) :: {:ok, [String.t()]} | {:error, QuickBEAM.JSError.t()}
-  def globals(runtime) do
-    eval(runtime, "Object.getOwnPropertyNames(globalThis).sort()")
-  end
 
   @doc """
-  Inspect a JS global by name. Returns its type, value (for primitives),
-  and properties (for objects/functions).
+  List global names defined in the JS context.
+
+  By default returns all `globalThis` property names. Pass `user_only: true`
+  to exclude JS builtins and QuickBEAM internals — only names defined by
+  your scripts.
 
   ## Examples
 
-      QuickBEAM.inspect_global(rt, "myVar")
-      {:ok, %{name: "myVar", type: "number", value: 42}}
+      {:ok, all} = QuickBEAM.globals(rt)
+      # ["Array", "Boolean", "Buffer", "Object", "console", "myVar", ...]
 
-      QuickBEAM.inspect_global(rt, "console")
-      {:ok, %{name: "console", type: "object", properties: ["log", "warn", "error"]}}
+      {:ok, mine} = QuickBEAM.globals(rt, user_only: true)
+      # ["myVar", "myFunc"]
   """
-  @spec inspect_global(runtime(), String.t()) :: {:ok, map()} | {:error, QuickBEAM.JSError.t()}
-  def inspect_global(runtime, name) when is_binary(name) do
-    case eval(runtime, inspect_global_js(name)) do
-      {:ok, result} when is_map(result) -> {:ok, atomize_keys(result)}
-      other -> other
+  @spec globals(runtime(), keyword()) :: {:ok, [String.t()]} | {:error, QuickBEAM.JSError.t()}
+  def globals(runtime, opts \\ []) do
+    if Keyword.get(opts, :user_only, false) do
+      eval(runtime, @user_globals_js)
+    else
+      eval(runtime, "Object.getOwnPropertyNames(globalThis).sort()")
     end
   end
 
-  defp inspect_global_js(name) do
-    """
-    (() => {
-      const name = #{inspect(name)};
-      const v = globalThis[name];
-      const t = typeof v;
-      const info = { name, type: t };
-      if (v === null) { info.type = "null"; info.value = null; }
-      else if (t === "undefined") { info.value = null; }
-      else if (t === "number" || t === "string" || t === "boolean" || t === "bigint") {
-        info.value = v;
-      } else if (t === "function") {
-        info.length = v.length;
-        const src = Function.prototype.toString.call(v);
-        if (/^class\\s/.test(src)) info.kind = "class";
-        else info.kind = "function";
-      } else if (t === "object" && v !== null) {
-        info.properties = Object.getOwnPropertyNames(v).sort();
-      }
-      return info;
-    })()
-    """
-  end
+  @doc """
+  Get the value of a JS global. Works like `eval(rt, "name")` but safer —
+  the name is accessed as a property, not evaluated as code.
 
-  defp atomize_keys(map) when is_map(map) do
-    Map.new(map, fn {k, v} -> {String.to_atom(k), v} end)
+  Returns the value converted to Elixir terms. For objects, returns a map
+  of enumerable own properties. For functions, returns a map with metadata.
+
+  ## Examples
+
+      QuickBEAM.get_global(rt, "myVar")
+      {:ok, 42}
+
+      QuickBEAM.get_global(rt, "myObj")
+      {:ok, %{"x" => 1, "y" => 2}}
+
+      QuickBEAM.get_global(rt, "nonexistent")
+      {:ok, nil}
+  """
+  @spec get_global(runtime(), String.t()) :: js_result()
+  def get_global(runtime, name) when is_binary(name) do
+    eval(runtime, "globalThis[#{inspect(name)}]")
   end
 end
