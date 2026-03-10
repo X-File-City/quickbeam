@@ -237,6 +237,66 @@ defmodule QuickBEAMTest do
     end
   end
 
+  describe "bytecode" do
+    test "compile returns binary" do
+      {:ok, rt} = QuickBEAM.start()
+      {:ok, bytecode} = QuickBEAM.compile(rt, "1 + 2")
+      assert is_binary(bytecode)
+      assert byte_size(bytecode) > 0
+      QuickBEAM.stop(rt)
+    end
+
+    test "compile and load_bytecode round-trip" do
+      {:ok, rt} = QuickBEAM.start()
+      {:ok, bytecode} = QuickBEAM.compile(rt, "40 + 2")
+      {:ok, result} = QuickBEAM.load_bytecode(rt, bytecode)
+      assert result == 42
+      QuickBEAM.stop(rt)
+    end
+
+    test "bytecode transfers between runtimes" do
+      {:ok, rt1} = QuickBEAM.start()
+      {:ok, bytecode} = QuickBEAM.compile(rt1, "function mul(a, b) { return a * b }")
+      QuickBEAM.stop(rt1)
+
+      {:ok, rt2} = QuickBEAM.start()
+      {:ok, _} = QuickBEAM.load_bytecode(rt2, bytecode)
+      {:ok, result} = QuickBEAM.call(rt2, "mul", [6, 7])
+      assert result == 42
+      QuickBEAM.stop(rt2)
+    end
+
+    test "compile reports syntax errors" do
+      {:ok, rt} = QuickBEAM.start()
+      {:error, %QuickBEAM.JSError{}} = QuickBEAM.compile(rt, "function {")
+      QuickBEAM.stop(rt)
+    end
+
+    test "bytecode is compact binary" do
+      {:ok, rt} = QuickBEAM.start()
+
+      {:ok, bytecode} =
+        QuickBEAM.compile(rt, """
+        function fibonacci(n) {
+          if (n <= 1) return n;
+          return fibonacci(n - 1) + fibonacci(n - 2);
+        }
+        """)
+
+      assert is_binary(bytecode)
+      assert byte_size(bytecode) < 1024
+      QuickBEAM.stop(rt)
+    end
+
+    test "compiled globals persist after load" do
+      {:ok, rt} = QuickBEAM.start()
+      {:ok, bytecode} = QuickBEAM.compile(rt, "globalThis.answer = 42")
+      {:ok, 42} = QuickBEAM.load_bytecode(rt, bytecode)
+      {:ok, 42} = QuickBEAM.eval(rt, "answer")
+      QuickBEAM.stop(rt)
+    end
+  end
+
   describe "resource limits" do
     test "max_stack_size allows deeper recursion" do
       code = "function deep(n) { return n <= 0 ? 0 : deep(n - 1) }; deep(500)"

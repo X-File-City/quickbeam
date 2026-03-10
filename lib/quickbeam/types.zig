@@ -43,8 +43,10 @@ pub const MemoryUsageResult = struct {
 
 pub const Message = union(enum) {
     eval: RequestPayload,
+    compile: RequestPayload,
     call_fn: CallPayload,
     load_module: ModulePayload,
+    load_bytecode: RequestPayload,
     reset: RequestPayload,
     resolve_call: CallResponse,
     reject_call: CallResponse,

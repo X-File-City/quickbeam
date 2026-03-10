@@ -221,6 +221,65 @@ pub const WorkerState = struct {
         self.set_ok_term(val, result);
     }
 
+    pub fn do_compile(self: *WorkerState, code: []const u8, result: *types.Result) void {
+        const code_z = gpa.dupeZ(u8, code) catch {
+            result.ok = false;
+            result.json = "Out of memory";
+            return;
+        };
+        defer gpa.free(code_z);
+
+        const flags: c_int = qjs.JS_EVAL_TYPE_GLOBAL | qjs.JS_EVAL_FLAG_COMPILE_ONLY;
+        const func = qjs.JS_Eval(self.ctx, code_z.ptr, code.len, "<compile>", flags);
+        defer qjs.JS_FreeValue(self.ctx, func);
+
+        if (js.js_is_exception(func)) {
+            self.set_error_term(result);
+            return;
+        }
+
+        var out_len: usize = 0;
+        const buf = qjs.JS_WriteObject(self.ctx, &out_len, func, qjs.JS_WRITE_OBJ_BYTECODE);
+        if (buf == null) {
+            self.set_error_term(result);
+            return;
+        }
+        defer qjs.js_free(self.ctx, buf);
+
+        const env = beam.alloc_env();
+        // SAFETY: out-param written by enif_alloc_binary before use
+        var bin: e.ErlNifBinary = undefined;
+        _ = e.enif_alloc_binary(out_len, &bin);
+        @memcpy(bin.data[0..out_len], buf[0..out_len]);
+        result.env = env;
+        result.term = e.enif_make_tuple2(env, beam.make_into_atom("bytes", .{ .env = env }).v, e.enif_make_binary(env, &bin));
+        result.ok = true;
+    }
+
+    pub fn do_load_bytecode(self: *WorkerState, bytecode: []const u8, result: *types.Result) void {
+        const func = qjs.JS_ReadObject(self.ctx, bytecode.ptr, bytecode.len, qjs.JS_READ_OBJ_BYTECODE);
+        if (js.js_is_exception(func)) {
+            self.set_error_term(result);
+            return;
+        }
+
+        const val = qjs.JS_EvalFunction(self.ctx, func);
+        defer qjs.JS_FreeValue(self.ctx, val);
+        self.drain_jobs();
+
+        if (js.js_is_exception(val)) {
+            self.set_error_term(result);
+            return;
+        }
+
+        if (js.is_promise(self.ctx, val)) {
+            self.await_promise(val, result, false);
+            return;
+        }
+
+        self.set_ok_term(val, result);
+    }
+
     pub fn do_call(self: *WorkerState, name: []const u8, args_env: ?*e.ErlNifEnv, args_term: e.ErlNifTerm, result: *types.Result) void {
         defer if (args_env) |ae| beam.free_env(ae);
 
@@ -480,12 +539,20 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
                     state.do_eval(p.code, p.result);
                     p.done.set();
                 },
+                .compile => |p| {
+                    state.do_compile(p.code, p.result);
+                    p.done.set();
+                },
                 .call_fn => |p| {
                     state.do_call(p.name, p.args_env, p.args_term, p.result);
                     p.done.set();
                 },
                 .load_module => |p| {
                     state.do_load_module(p.name, p.code, p.result);
+                    p.done.set();
+                },
+                .load_bytecode => |p| {
+                    state.do_load_bytecode(p.code, p.result);
                     p.done.set();
                 },
                 .reset => |p| {

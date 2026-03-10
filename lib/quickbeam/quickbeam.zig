@@ -101,6 +101,36 @@ pub fn eval(resource: RuntimeResource, code: []const u8) beam.term {
     return make_result(&result);
 }
 
+pub fn compile(resource: RuntimeResource, code: []const u8) beam.term {
+    var result = Result{};
+    var done = std.Thread.ResetEvent{};
+    const data = resource.unpack();
+
+    enqueue(data, .{ .compile = .{
+        .code = code,
+        .result = &result,
+        .done = &done,
+    } });
+
+    done.wait();
+    return make_result(&result);
+}
+
+pub fn load_bytecode(resource: RuntimeResource, bytecode: []const u8) beam.term {
+    var result = Result{};
+    var done = std.Thread.ResetEvent{};
+    const data = resource.unpack();
+
+    enqueue(data, .{ .load_bytecode = .{
+        .code = bytecode,
+        .result = &result,
+        .done = &done,
+    } });
+
+    done.wait();
+    return make_result(&result);
+}
+
 pub fn call_function(resource: RuntimeResource, name: []const u8, args: beam.term) beam.term {
     var result = Result{};
     var done = std.Thread.ResetEvent{};

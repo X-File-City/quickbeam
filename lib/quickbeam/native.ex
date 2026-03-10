@@ -16,8 +16,10 @@ defmodule QuickBEAM.Native do
     resources: [:RuntimeResource],
     nifs: [
       eval: [:dirty_io],
+      compile: [:dirty_io],
       call_function: [:dirty_io],
       load_module: [:dirty_io],
+      load_bytecode: [:dirty_io],
       reset_runtime: [:dirty_io],
       stop_runtime: [:dirty_io],
       start_runtime: [],

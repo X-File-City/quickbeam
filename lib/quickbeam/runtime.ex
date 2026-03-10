@@ -31,6 +31,17 @@ defmodule QuickBEAM.Runtime do
     GenServer.call(server, {:call, fn_name, args}, :infinity)
   end
 
+  @spec compile(GenServer.server(), String.t()) :: {:ok, binary()} | {:error, String.t()}
+  def compile(server, code) when is_binary(code) do
+    GenServer.call(server, {:compile, code}, :infinity)
+  end
+
+  @spec load_bytecode(GenServer.server(), binary()) ::
+          {:ok, term()} | {:error, String.t()}
+  def load_bytecode(server, bytecode) when is_binary(bytecode) do
+    GenServer.call(server, {:load_bytecode, bytecode}, :infinity)
+  end
+
   @spec load_module(GenServer.server(), String.t(), String.t()) ::
           :ok | {:error, String.t()}
   def load_module(server, name, code) when is_binary(name) and is_binary(code) do
@@ -150,6 +161,39 @@ defmodule QuickBEAM.Runtime do
     Task.start(fn ->
       result =
         case QuickBEAM.Native.eval(resource, code) do
+          {:ok, value} -> {:ok, value}
+          {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
+        end
+
+      GenServer.reply(from, result)
+    end)
+
+    {:noreply, state}
+  end
+
+  def handle_call({:compile, code}, from, state) do
+    resource = state.resource
+
+    Task.start(fn ->
+      result =
+        case QuickBEAM.Native.compile(resource, code) do
+          {:ok, {:bytes, bytecode}} -> {:ok, bytecode}
+          {:ok, bytecode} -> {:ok, bytecode}
+          {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
+        end
+
+      GenServer.reply(from, result)
+    end)
+
+    {:noreply, state}
+  end
+
+  def handle_call({:load_bytecode, bytecode}, from, state) do
+    resource = state.resource
+
+    Task.start(fn ->
+      result =
+        case QuickBEAM.Native.load_bytecode(resource, bytecode) do
           {:ok, value} -> {:ok, value}
           {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
         end

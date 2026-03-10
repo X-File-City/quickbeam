@@ -104,6 +104,29 @@ defmodule QuickBEAM do
   end
 
   @doc """
+  Compile JavaScript source to bytecode without executing it.
+
+  Returns `{:ok, bytecode}` where `bytecode` is a binary that can be loaded
+  into any runtime with `load_bytecode/2`. Useful for precompilation, caching,
+  and transferring compiled code between runtimes or nodes.
+  """
+  @spec compile(runtime(), String.t()) :: {:ok, binary()} | {:error, QuickBEAM.JSError.t()}
+  def compile(runtime, code) do
+    QuickBEAM.Runtime.compile(runtime, code)
+  end
+
+  @doc """
+  Execute precompiled bytecode from `compile/2`.
+
+  The bytecode runs in the current runtime's context, with access to all
+  globals, handlers, and builtins.
+  """
+  @spec load_bytecode(runtime(), binary()) :: js_result()
+  def load_bytecode(runtime, bytecode) do
+    QuickBEAM.Runtime.load_bytecode(runtime, bytecode)
+  end
+
+  @doc """
   Load an ES module into the runtime.
 
       iex> {:ok, rt} = QuickBEAM.start()
