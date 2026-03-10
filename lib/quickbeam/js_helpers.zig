@@ -27,6 +27,12 @@ pub fn js_is_exception(v: qjs.JSValue) bool {
     return v.tag == qjs.JS_TAG_EXCEPTION;
 }
 
+pub fn is_undefined(v: qjs.JSValue) bool {
+    return v.tag == qjs.JS_TAG_UNDEFINED;
+}
+
+pub const JS_UNDEFINED = qjs.JSValue{ .tag = qjs.JS_TAG_UNDEFINED, .u = .{ .int32 = 0 } };
+
 pub fn json_parse(ctx: *qjs.JSContext, json: []const u8) qjs.JSValue {
     const json_str = qjs.JS_NewStringLen(ctx, json.ptr, json.len);
     defer qjs.JS_FreeValue(ctx, json_str);

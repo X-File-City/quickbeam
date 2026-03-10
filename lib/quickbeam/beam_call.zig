@@ -11,11 +11,17 @@ const gpa = types.gpa;
 
 pub fn install(ctx: *qjs.JSContext, global: qjs.JSValue) void {
     const beam_obj = qjs.JS_NewObject(ctx);
-    const call_fn = qjs.JS_NewCFunction(ctx, &beam_call_impl, "call", 1);
-    const call_sync_fn = qjs.JS_NewCFunction(ctx, &beam_call_sync_impl, "callSync", 1);
-    _ = qjs.JS_SetPropertyStr(ctx, beam_obj, "call", call_fn);
-    _ = qjs.JS_SetPropertyStr(ctx, beam_obj, "callSync", call_sync_fn);
+    _ = qjs.JS_SetPropertyStr(ctx, beam_obj, "call", qjs.JS_NewCFunction(ctx, &beam_call_impl, "call", 1));
+    _ = qjs.JS_SetPropertyStr(ctx, beam_obj, "callSync", qjs.JS_NewCFunction(ctx, &beam_call_sync_impl, "callSync", 1));
+    _ = qjs.JS_SetPropertyStr(ctx, beam_obj, "send", qjs.JS_NewCFunction(ctx, &beam_send_impl, "send", 2));
+    _ = qjs.JS_SetPropertyStr(ctx, beam_obj, "self", qjs.JS_NewCFunction(ctx, &beam_self_impl, "self", 0));
     _ = qjs.JS_SetPropertyStr(ctx, global, "beam", beam_obj);
+
+    const process_obj = qjs.JS_NewObject(ctx);
+    _ = qjs.JS_SetPropertyStr(ctx, process_obj, "onMessage", qjs.JS_NewCFunction(ctx, &process_on_message_impl, "onMessage", 1));
+    _ = qjs.JS_SetPropertyStr(ctx, process_obj, "send", qjs.JS_NewCFunction(ctx, &beam_send_impl, "send", 2));
+    _ = qjs.JS_SetPropertyStr(ctx, process_obj, "self", qjs.JS_NewCFunction(ctx, &beam_self_impl, "self", 0));
+    _ = qjs.JS_SetPropertyStr(ctx, global, "Process", process_obj);
 }
 
 fn beam_call_impl(
@@ -114,6 +120,65 @@ fn beam_call_sync_impl(
     }
 
     return qjs.JS_ThrowInternalError(ctx, "beam.callSync: no result received");
+}
+
+fn beam_send_impl(
+    ctx: ?*qjs.JSContext,
+    _: qjs.JSValue,
+    argc: c_int,
+    argv: [*c]qjs.JSValue,
+) callconv(.c) qjs.JSValue {
+    if (argc < 2) return qjs.JS_ThrowTypeError(ctx, "beam.send requires a pid and a message");
+
+    // First arg must be a PID (passed as an opaque atom/term from beam.self or received via message)
+    const send_env = beam.alloc_env();
+    const pid_term = js_to_beam.convert(ctx.?, argv[0], send_env);
+    const msg_term = js_to_beam.convert(ctx.?, argv[1], send_env);
+
+    // SAFETY: pid immediately filled by enif_get_local_pid
+    var pid: beam.pid = undefined;
+    if (e.enif_get_local_pid(send_env, pid_term, &pid) == 0) {
+        beam.free_env(send_env);
+        return qjs.JS_ThrowTypeError(ctx, "beam.send: first argument must be a PID");
+    }
+
+    _ = e.enif_send(null, &pid, send_env, msg_term);
+    beam.free_env(send_env);
+    return js.js_true();
+}
+
+fn beam_self_impl(
+    ctx: ?*qjs.JSContext,
+    _: qjs.JSValue,
+    _: c_int,
+    _: [*c]qjs.JSValue,
+) callconv(.c) qjs.JSValue {
+    const self: *worker.WorkerState = @ptrCast(@alignCast(qjs.JS_GetContextOpaque(ctx)));
+    // Return the owner PID as an opaque JS value via beam_to_js
+    const term_env = beam.alloc_env();
+    const pid_term = beam.make(self.owner_pid, .{ .env = term_env });
+    const js_val = beam_to_js.convert(ctx.?, term_env, pid_term.v);
+    beam.free_env(term_env);
+    return js_val;
+}
+
+fn process_on_message_impl(
+    ctx: ?*qjs.JSContext,
+    _: qjs.JSValue,
+    argc: c_int,
+    argv: [*c]qjs.JSValue,
+) callconv(.c) qjs.JSValue {
+    const self: *worker.WorkerState = @ptrCast(@alignCast(qjs.JS_GetContextOpaque(ctx)));
+
+    if (argc < 1 or !qjs.JS_IsFunction(ctx, argv[0]))
+        return qjs.JS_ThrowTypeError(ctx, "Process.onMessage requires a function argument");
+
+    if (!js.is_undefined(self.message_handler)) {
+        qjs.JS_FreeValue(ctx, self.message_handler);
+    }
+
+    self.message_handler = qjs.JS_DupValue(ctx, argv[0]);
+    return js.js_undefined();
 }
 
 fn send_beam_call_term(self: *worker.WorkerState, call_id: u64, name: []const u8, ctx: *qjs.JSContext, argc: c_int, argv: [*c]qjs.JSValue) void {

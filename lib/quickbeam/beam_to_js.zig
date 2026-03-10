@@ -58,6 +58,21 @@ fn convert_recursive(ctx: *qjs.JSContext, env: ?*e.ErlNifEnv, term: e.ErlNifTerm
         return convert_map(ctx, env, term, depth);
     }
 
+    // PID → opaque JS object with ETF-encoded data
+    if (e.enif_is_pid(env, term) != 0) {
+        return make_beam_term(ctx, env, term, "pid");
+    }
+
+    // Reference → opaque JS object
+    if (e.enif_is_ref(env, term) != 0) {
+        return make_beam_term(ctx, env, term, "ref");
+    }
+
+    // Port → opaque JS object
+    if (e.enif_is_port(env, term) != 0) {
+        return make_beam_term(ctx, env, term, "port");
+    }
+
     // Tuple
     var tuple_arity: c_int = 0;
     // SAFETY: immediately filled by enif_get_tuple
@@ -85,6 +100,18 @@ fn convert_recursive(ctx: *qjs.JSContext, env: ?*e.ErlNifEnv, term: e.ErlNifTerm
     }
 
     return js.js_null();
+}
+
+fn make_beam_term(ctx: *qjs.JSContext, env: ?*e.ErlNifEnv, term: e.ErlNifTerm, type_name: [*c]const u8) qjs.JSValue {
+    // SAFETY: immediately filled by enif_term_to_binary
+    var bin: e.ErlNifBinary = undefined;
+    if (e.enif_term_to_binary(env, term, &bin) == 0) return js.js_null();
+    defer e.enif_release_binary(&bin);
+
+    const obj = qjs.JS_NewObject(ctx);
+    _ = qjs.JS_SetPropertyStr(ctx, obj, "__beam_type__", qjs.JS_NewStringLen(ctx, type_name, std.mem.len(type_name)));
+    _ = qjs.JS_SetPropertyStr(ctx, obj, "__beam_data__", make_uint8array(ctx, bin.data, bin.size));
+    return obj;
 }
 
 fn make_uint8array(ctx: *qjs.JSContext, data: [*c]u8, size: usize) qjs.JSValue {

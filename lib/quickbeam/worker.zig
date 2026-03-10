@@ -30,6 +30,7 @@ pub const WorkerState = struct {
     next_call_id: u64 = 1,
     next_timer_id: u64 = 1,
     start_time: i128 = 0,
+    message_handler: qjs.JSValue = js.JS_UNDEFINED,
     buf: [4096]u8 = @splat(0),
 
     pub fn deinit(self: *WorkerState) void {
@@ -45,6 +46,10 @@ pub const WorkerState = struct {
             qjs.JS_FreeValue(self.ctx, t.callback);
         }
         self.timers.deinit();
+
+        if (!js.is_undefined(self.message_handler)) {
+            qjs.JS_FreeValue(self.ctx, self.message_handler);
+        }
 
         qjs.JS_FreeContext(self.ctx);
     }
@@ -114,6 +119,25 @@ pub const WorkerState = struct {
                 self.drain_jobs();
             }
         }
+    }
+
+    pub fn deliver_message(self: *WorkerState, sm: types.MessagePayload) void {
+        const env = sm.env orelse return;
+        defer beam.free_env(env);
+
+        if (js.is_undefined(self.message_handler)) return;
+
+        const val = beam_to_js.convert(self.ctx, env, sm.term);
+        defer qjs.JS_FreeValue(self.ctx, val);
+
+        var args = [_]qjs.JSValue{val};
+        const ret = qjs.JS_Call(self.ctx, self.message_handler, js.js_undefined(), 1, &args);
+        qjs.JS_FreeValue(self.ctx, ret);
+        if (js.js_is_exception(ret)) {
+            const exc = qjs.JS_GetException(self.ctx);
+            qjs.JS_FreeValue(self.ctx, exc);
+        }
+        self.drain_jobs();
     }
 
     pub fn resolve_pending(self: *WorkerState, id: u64, value_json: []const u8) void {
@@ -290,6 +314,11 @@ pub const WorkerState = struct {
         }
         self.timers.clearRetainingCapacity();
 
+        if (!js.is_undefined(self.message_handler)) {
+            qjs.JS_FreeValue(self.ctx, self.message_handler);
+            self.message_handler = js.JS_UNDEFINED;
+        }
+
         qjs.JS_FreeContext(self.ctx);
         self.ctx = qjs.JS_NewContext(self.rt) orelse {
             result.ok = false;
@@ -362,12 +391,13 @@ pub const WorkerState = struct {
                 return;
             }
 
-            // Process incoming messages (resolve/reject from beam.call)
+            // Process incoming messages (resolve/reject from beam.call, BEAM→JS messages)
             if (types.dequeue(self.rd)) |msg| {
                 switch (msg) {
                     .resolve_call => |rc| self.resolve_pending(rc.id, rc.json),
                     .reject_call => |rc| self.reject_pending(rc.id, rc.json),
                     .resolve_call_term => |rc| self.resolve_pending_term(rc.env, rc.term, rc.id),
+                    .send_message => |sm| self.deliver_message(sm),
                     .stop => {
                         result.ok = false;
                         result.json = "Runtime stopped";
@@ -464,7 +494,7 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
                 .resolve_call => |rc| state.resolve_pending(rc.id, rc.json),
                 .reject_call => |rc| state.reject_pending(rc.id, rc.json),
                 .resolve_call_term => |rc| state.resolve_pending_term(rc.env, rc.term, rc.id),
-                .send_message => |sm| if (sm.env) |msg_env| beam.free_env(msg_env),
+                .send_message => |sm| state.deliver_message(sm),
                 .memory_usage => |mu| {
                     // SAFETY: immediately filled by JS_ComputeMemoryUsage
                     var usage: qjs.JSMemoryUsage = undefined;

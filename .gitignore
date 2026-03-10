@@ -33,3 +33,5 @@ fuzz/zig-out/
 
 # JS toolchain
 node_modules/
+# Git worktrees for parallel agent work
+.worktrees/

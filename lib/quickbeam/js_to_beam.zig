@@ -151,6 +151,19 @@ fn convert_array(ctx: *qjs.JSContext, val: qjs.JSValue, opts: Env, depth: u32) e
 }
 
 fn convert_object_to_map(ctx: *qjs.JSContext, val: qjs.JSValue, opts: Env, depth: u32) e.ErlNifTerm {
+    // Opaque BEAM term (PID, ref, port): reconstruct from ETF binary
+    const type_val = qjs.JS_GetPropertyStr(ctx, val, "__beam_type__");
+    if (!qjs.JS_IsUndefined(type_val)) {
+        qjs.JS_FreeValue(ctx, type_val);
+        const data_val = qjs.JS_GetPropertyStr(ctx, val, "__beam_data__");
+        defer qjs.JS_FreeValue(ctx, data_val);
+        if (!qjs.JS_IsUndefined(data_val)) {
+            return decode_beam_term(ctx, data_val, opts);
+        }
+    } else {
+        qjs.JS_FreeValue(ctx, type_val);
+    }
+
     var ptab: ?*qjs.JSPropertyEnum = null;
     var plen: u32 = 0;
 
@@ -222,6 +235,31 @@ fn convert_symbol(ctx: *qjs.JSContext, val: qjs.JSValue, opts: Env) e.ErlNifTerm
         }
     }
     return beam.make_into_atom("symbol", opts).v;
+}
+
+fn decode_beam_term(ctx: *qjs.JSContext, data_val: qjs.JSValue, opts: Env) e.ErlNifTerm {
+    // Extract bytes from the Uint8Array
+    var byte_offset: usize = 0;
+    var byte_len: usize = 0;
+    var bytes_per_element: usize = 0;
+    const ab = qjs.JS_GetTypedArrayBuffer(ctx, data_val, &byte_offset, &byte_len, &bytes_per_element);
+    if (js.js_is_exception(ab)) {
+        const exc = qjs.JS_GetException(ctx);
+        qjs.JS_FreeValue(ctx, exc);
+        return beam.make_into_atom("nil", opts).v;
+    }
+    defer qjs.JS_FreeValue(ctx, ab);
+
+    var buf_size: usize = 0;
+    const ptr = qjs.JS_GetArrayBuffer(ctx, &buf_size, ab);
+    if (ptr == null) return beam.make_into_atom("nil", opts).v;
+
+    // SAFETY: result immediately filled by enif_binary_to_term
+    var result: e.ErlNifTerm = undefined;
+    if (e.enif_binary_to_term(opts.env, ptr + byte_offset, byte_len, &result, 0) == 0) {
+        return beam.make_into_atom("nil", opts).v;
+    }
+    return result;
 }
 
 fn is_typed_array(ctx: *qjs.JSContext, val: qjs.JSValue) bool {
