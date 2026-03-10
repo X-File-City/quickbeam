@@ -1,6 +1,8 @@
 const types = @import("types.zig");
 const js = @import("js_helpers.zig");
 const globals = @import("globals.zig");
+const text_encoding = @import("text_encoding.zig");
+const web_apis = @import("web_apis.zig");
 const std = types.std;
 const beam = types.beam;
 const qjs = types.qjs;
@@ -26,6 +28,7 @@ pub const WorkerState = struct {
     timers: std.AutoHashMap(u64, TimerEntry),
     next_call_id: u64 = 1,
     next_timer_id: u64 = 1,
+    start_time: i128 = 0,
     buf: [4096]u8 = @splat(0),
 
     pub fn deinit(self: *WorkerState) void {
@@ -336,6 +339,8 @@ pub const WorkerState = struct {
         globals.install_beam_object(self.ctx, global);
         globals.install_timers(self.ctx, global);
         globals.install_console(self.ctx, global);
+        text_encoding.install(self.ctx, global);
+        web_apis.install(self.ctx, global, self.start_time);
     }
 };
 
@@ -355,6 +360,7 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
         .rd = rd,
         .pending_calls = std.AutoHashMap(u64, PendingCall).init(gpa),
         .timers = std.AutoHashMap(u64, TimerEntry).init(gpa),
+        .start_time = std.time.nanoTimestamp(),
     };
     defer state.deinit();
 
