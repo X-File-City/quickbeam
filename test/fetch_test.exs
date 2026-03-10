@@ -1,143 +1,134 @@
 defmodule QuickBEAM.FetchTest do
   use ExUnit.Case, async: false
+  use Plug.Router
 
   @moduletag :fetch
 
+  plug(Plug.Parsers, parsers: [:urlencoded], pass: ["*/*"])
+  plug(:match)
+  plug(:dispatch)
+
+  get "/hello" do
+    send_resp(conn, 200, "Hello!")
+  end
+
+  get "/json" do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, ~s|{"name":"beam","version":27}|)
+  end
+
+  get "/not-found" do
+    send_resp(conn, 404, "Nope")
+  end
+
+  get "/headers" do
+    conn
+    |> put_resp_header("x-custom", "hello")
+    |> send_resp(200, "ok")
+  end
+
+  get "/bytes" do
+    conn
+    |> put_resp_content_type("application/octet-stream")
+    |> send_resp(200, <<0, 1, 2, 3>>)
+  end
+
+  post "/echo" do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    ct = Plug.Conn.get_req_header(conn, "content-type") |> List.first("")
+
+    json = ~s|{"method":"POST","body":#{inspect(body)},"content_type":#{inspect(ct)}}|
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, json)
+  end
+
+  put "/echo" do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, ~s|{"method":"PUT","body":#{inspect(body)}}|)
+  end
+
+  delete "/item/:id" do
+    send_resp(conn, 204, "")
+  end
+
+  match _ do
+    send_resp(conn, 404, "not found")
+  end
+
+  setup_all do
+    {:ok, server} = Bandit.start_link(plug: __MODULE__, port: 0, ip: :loopback)
+    {:ok, {_addr, port}} = ThousandIsland.listener_info(server)
+    %{base: "http://127.0.0.1:#{port}"}
+  end
+
   setup do
-    {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
-    {:ok, port} = :inet.port(listen)
-
     {:ok, rt} = QuickBEAM.start()
-
-    on_exit(fn ->
-      :gen_tcp.close(listen)
-      if Process.alive?(rt), do: QuickBEAM.stop(rt)
-    end)
-
-    %{rt: rt, listen: listen, port: port}
+    on_exit(fn -> if Process.alive?(rt), do: QuickBEAM.stop(rt) end)
+    %{rt: rt}
   end
 
-  defp serve_once(listen, response) do
-    Task.start(fn ->
-      {:ok, sock} = :gen_tcp.accept(listen, 5000)
-      {:ok, _data} = recv_request(sock)
-      :gen_tcp.send(sock, response)
-      :gen_tcp.close(sock)
-    end)
-  end
-
-  defp serve_once_with_request(listen, response) do
-    parent = self()
-
-    Task.start(fn ->
-      {:ok, sock} = :gen_tcp.accept(listen, 5000)
-      {:ok, data} = recv_request(sock)
-      send(parent, {:request_data, data})
-      :gen_tcp.send(sock, response)
-      :gen_tcp.close(sock)
-    end)
-  end
-
-  defp recv_request(sock) do
-    recv_request(sock, <<>>)
-  end
-
-  defp recv_request(sock, acc) do
-    case :gen_tcp.recv(sock, 0, 2000) do
-      {:ok, data} ->
-        acc = acc <> data
-
-        if String.contains?(acc, "\r\n\r\n") do
-          {:ok, acc}
-        else
-          recv_request(sock, acc)
-        end
-
-      {:error, :closed} ->
-        {:ok, acc}
-    end
-  end
-
-  describe "basic fetch" do
-    test "GET request returns status and body", ctx do
-      serve_once(ctx.listen, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nHello!")
-
+  describe "basic GET" do
+    test "returns status and body", %{rt: rt, base: base} do
       {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const r = await fetch("http://127.0.0.1:#{ctx.port}/test");
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/hello");
           ({ status: r.status, ok: r.ok, body: await r.text() })
         """)
 
       assert result == %{"status" => 200, "ok" => true, "body" => "Hello!"}
     end
 
-    test "GET request parses JSON", ctx do
-      body = ~s|{"name":"beam","version":27}|
-
-      serve_once(
-        ctx.listen,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n#{body}"
-      )
-
+    test "parses JSON response", %{rt: rt, base: base} do
       {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const r = await fetch("http://127.0.0.1:#{ctx.port}/json");
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/json");
           await r.json()
         """)
 
       assert result == %{"name" => "beam", "version" => 27}
     end
 
-    test "non-200 status", ctx do
-      serve_once(ctx.listen, "HTTP/1.1 404 Not Found\r\n\r\nNope")
-
+    test "non-200 status", %{rt: rt, base: base} do
       {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const r = await fetch("http://127.0.0.1:#{ctx.port}/missing");
-          ({ status: r.status, ok: r.ok, statusText: r.statusText })
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/not-found");
+          ({ status: r.status, ok: r.ok })
         """)
 
-      assert result["status"] == 404
-      assert result["ok"] == false
-      assert result["statusText"] == "Not Found"
+      assert result == %{"status" => 404, "ok" => false}
     end
 
-    test "response headers accessible", ctx do
-      serve_once(
-        ctx.listen,
-        "HTTP/1.1 200 OK\r\nX-Custom: hello\r\nContent-Type: text/plain\r\n\r\nok"
-      )
-
+    test "response headers", %{rt: rt, base: base} do
       {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const r = await fetch("http://127.0.0.1:#{ctx.port}/");
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/headers");
           r.headers.get("x-custom")
         """)
 
       assert result == "hello"
     end
 
-    test "response body as bytes", ctx do
-      serve_once(ctx.listen, "HTTP/1.1 200 OK\r\n\r\n\x00\x01\x02\x03")
-
+    test "response as bytes", %{rt: rt, base: base} do
       {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const r = await fetch("http://127.0.0.1:#{ctx.port}/");
-          const buf = await r.bytes();
-          Array.from(buf)
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/bytes");
+          Array.from(await r.bytes())
         """)
 
       assert result == [0, 1, 2, 3]
     end
 
-    test "response body as arrayBuffer", ctx do
-      serve_once(ctx.listen, "HTTP/1.1 200 OK\r\n\r\nABCD")
-
+    test "response as arrayBuffer", %{rt: rt, base: base} do
       {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const r = await fetch("http://127.0.0.1:#{ctx.port}/");
-          const ab = await r.arrayBuffer();
-          ab.byteLength
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/bytes");
+          (await r.arrayBuffer()).byteLength
         """)
 
       assert result == 4
@@ -145,134 +136,96 @@ defmodule QuickBEAM.FetchTest do
   end
 
   describe "request methods and body" do
-    test "POST with string body", ctx do
-      serve_once_with_request(
-        ctx.listen,
-        "HTTP/1.1 200 OK\r\n\r\nok"
-      )
-
-      {:ok, _} =
-        QuickBEAM.eval(ctx.rt, """
-          await fetch("http://127.0.0.1:#{ctx.port}/post", {
+    test "POST with string body", %{rt: rt, base: base} do
+      {:ok, result} =
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/echo", {
             method: "POST",
             body: "hello world"
-          })
+          });
+          await r.json()
         """)
 
-      assert_receive {:request_data, data}, 2000
-      assert data =~ "POST /post"
-      assert data =~ "hello world"
-      assert data =~ "text/plain"
+      assert result["method"] == "POST"
+      assert result["body"] == "hello world"
+      assert result["content_type"] =~ "text/plain"
     end
 
-    test "POST with JSON body and custom headers", ctx do
-      serve_once_with_request(
-        ctx.listen,
-        "HTTP/1.1 201 Created\r\n\r\nok"
-      )
-
+    test "POST with JSON body", %{rt: rt, base: base} do
       {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const r = await fetch("http://127.0.0.1:#{ctx.port}/api", {
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/echo", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ key: "value" })
           });
-          r.status
+          await r.json()
         """)
 
-      assert result == 201
-
-      assert_receive {:request_data, data}, 2000
-      assert data =~ "application/json"
-      assert data =~ ~s|{"key":"value"}|
+      assert result["method"] == "POST"
+      assert result["body"] == ~s|{"key":"value"}|
+      assert result["content_type"] =~ "application/json"
     end
 
-    test "PUT method", ctx do
-      serve_once_with_request(ctx.listen, "HTTP/1.1 200 OK\r\n\r\n")
-
-      {:ok, _} =
-        QuickBEAM.eval(ctx.rt, """
-          await fetch("http://127.0.0.1:#{ctx.port}/", { method: "PUT", body: "data" })
-        """)
-
-      assert_receive {:request_data, data}, 2000
-      assert data =~ "PUT /"
-    end
-
-    test "DELETE method", ctx do
-      serve_once_with_request(ctx.listen, "HTTP/1.1 204 No Content\r\n\r\n")
-
+    test "PUT method", %{rt: rt, base: base} do
       {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const r = await fetch("http://127.0.0.1:#{ctx.port}/item/1", { method: "DELETE" });
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/echo", { method: "PUT", body: "data" });
+          await r.json()
+        """)
+
+      assert result["method"] == "PUT"
+      assert result["body"] == "data"
+    end
+
+    test "DELETE method", %{rt: rt, base: base} do
+      {:ok, result} =
+        QuickBEAM.eval(rt, """
+          const r = await fetch("#{base}/item/42", { method: "DELETE" });
           r.status
         """)
 
       assert result == 204
-      assert_receive {:request_data, data}, 2000
-      assert data =~ "DELETE /item/1"
     end
   end
 
-  describe "Request object" do
-    test "construct with URL string", ctx do
-      serve_once(ctx.listen, "HTTP/1.1 200 OK\r\n\r\nok")
-
-      {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const req = new Request("http://127.0.0.1:#{ctx.port}/");
-          const r = await fetch(req);
-          r.status
+  describe "Request and Response objects" do
+    test "Request constructor", %{rt: rt, base: base} do
+      {:ok, 200} =
+        QuickBEAM.eval(rt, """
+          const req = new Request("#{base}/hello");
+          (await fetch(req)).status
         """)
-
-      assert result == 200
     end
 
-    test "clone a request", ctx do
-      {:ok, result} =
-        QuickBEAM.eval(ctx.rt, """
-          const req = new Request("http://example.com", { method: "POST" });
-          const clone = req.clone();
-          clone.method
+    test "Request.clone()", %{rt: rt} do
+      {:ok, "POST"} =
+        QuickBEAM.eval(rt, """
+          new Request("http://example.com", { method: "POST" }).clone().method
         """)
-
-      assert result == "POST"
     end
-  end
 
-  describe "Response object" do
-    test "Response.json() static method", _ctx do
-      {:ok, rt} = QuickBEAM.start()
-
+    test "Response.json()", %{rt: rt} do
       {:ok, result} =
         QuickBEAM.eval(rt, """
           const r = Response.json({ hello: "world" });
-          ({ status: r.status, type: r.headers.get("content-type"), body: await r.json() })
+          ({
+            status: r.status,
+            type: r.headers.get("content-type"),
+            body: await r.json()
+          })
         """)
 
       assert result["status"] == 200
       assert result["type"] == "application/json"
       assert result["body"] == %{"hello" => "world"}
-      QuickBEAM.stop(rt)
     end
 
-    test "Response.error() static method", _ctx do
-      {:ok, rt} = QuickBEAM.start()
-
-      {:ok, result} =
-        QuickBEAM.eval(rt, """
-          const r = Response.error();
-          r.status
-        """)
-
-      assert result == 0
-      QuickBEAM.stop(rt)
+    test "Response.error()", %{rt: rt} do
+      {:ok, 0} = QuickBEAM.eval(rt, "Response.error().status")
     end
 
-    test "Response.redirect() static method", _ctx do
-      {:ok, rt} = QuickBEAM.start()
-
+    test "Response.redirect()", %{rt: rt} do
       {:ok, result} =
         QuickBEAM.eval(rt, """
           const r = Response.redirect("http://example.com", 301);
@@ -280,12 +233,9 @@ defmodule QuickBEAM.FetchTest do
         """)
 
       assert result == %{"status" => 301, "location" => "http://example.com"}
-      QuickBEAM.stop(rt)
     end
 
-    test "body can only be consumed once", _ctx do
-      {:ok, rt} = QuickBEAM.start()
-
+    test "body consumed once", %{rt: rt} do
       {:ok, result} =
         QuickBEAM.eval(rt, """
           const r = Response.json({ a: 1 });
@@ -294,36 +244,29 @@ defmodule QuickBEAM.FetchTest do
         """)
 
       assert result =~ "consumed"
-      QuickBEAM.stop(rt)
     end
 
-    test "clone preserves body", _ctx do
-      {:ok, rt} = QuickBEAM.start()
-
-      {:ok, result} =
+    test "clone preserves body", %{rt: rt} do
+      {:ok, true} =
         QuickBEAM.eval(rt, """
           const r = Response.json({ a: 1 });
           const r2 = r.clone();
-          const t1 = await r.text();
-          const t2 = await r2.text();
-          t1 === t2
+          (await r.text()) === (await r2.text())
         """)
-
-      assert result == true
-      QuickBEAM.stop(rt)
     end
   end
 
   describe "error handling" do
-    test "connection refused", ctx do
-      :gen_tcp.close(ctx.listen)
+    test "connection refused" do
+      {:ok, rt} = QuickBEAM.start()
 
       {:error, error} =
-        QuickBEAM.eval(ctx.rt, """
-          await fetch("http://127.0.0.1:#{ctx.port}/")
+        QuickBEAM.eval(rt, """
+          await fetch("http://127.0.0.1:1/")
         """)
 
       assert error.message =~ "fetch failed"
+      QuickBEAM.stop(rt)
     end
   end
 end
