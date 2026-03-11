@@ -1354,4 +1354,65 @@
     return true;
   });
   globalThis.Worker = QBWorker;
+
+  // priv/ts/locks.ts
+  class QBLockManager {
+    async request(name, callbackOrOptions, maybeCallback) {
+      let options = {};
+      let callback;
+      if (typeof callbackOrOptions === "function") {
+        callback = callbackOrOptions;
+      } else {
+        options = callbackOrOptions;
+        callback = maybeCallback;
+      }
+      const mode = options.mode ?? "exclusive";
+      const ifAvailable = options.ifAvailable ?? false;
+      if (options.signal?.aborted) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+      const result = await beam.call("__locks_request", name, mode, ifAvailable);
+      if (result === "not_available") {
+        return await callback(null);
+      }
+      if (result === "holder_down") {
+        throw new DOMException("Lock holder terminated", "AbortError");
+      }
+      const lock = { name, mode };
+      try {
+        return await callback(lock);
+      } finally {
+        await beam.call("__locks_release", name);
+      }
+    }
+    async query() {
+      return await beam.call("__locks_query");
+    }
+  }
+  var lockManager = new QBLockManager;
+  globalThis.navigator = globalThis.navigator ?? {};
+  navigator.locks = lockManager;
+
+  // priv/ts/storage.ts
+  class QBStorage {
+    getItem(key) {
+      return beam.callSync("__storage_get", String(key));
+    }
+    setItem(key, value) {
+      beam.callSync("__storage_set", String(key), String(value));
+    }
+    removeItem(key) {
+      beam.callSync("__storage_remove", String(key));
+    }
+    clear() {
+      beam.callSync("__storage_clear");
+    }
+    key(index) {
+      return beam.callSync("__storage_key", index);
+    }
+    get length() {
+      return beam.callSync("__storage_length");
+    }
+  }
+  globalThis.localStorage = new QBStorage;
 })();

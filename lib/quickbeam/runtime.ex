@@ -121,7 +121,16 @@ defmodule QuickBEAM.Runtime do
     "__broadcast_leave" => {:with_caller, &QuickBEAM.BroadcastChannel.leave/2},
     "__worker_spawn" => {:with_caller, &QuickBEAM.WorkerAPI.spawn_worker/2},
     "__worker_post" => &QuickBEAM.WorkerAPI.post_to_worker/1,
-    "__worker_terminate" => &QuickBEAM.WorkerAPI.terminate_worker/1
+    "__worker_terminate" => &QuickBEAM.WorkerAPI.terminate_worker/1,
+    "__locks_request" => {:with_caller, &QuickBEAM.LocksAPI.request_lock/2},
+    "__locks_release" => {:with_caller, &QuickBEAM.LocksAPI.release_lock/2},
+    "__locks_query" => &QuickBEAM.LocksAPI.query_locks/1,
+    "__storage_get" => &QuickBEAM.Storage.get_item/1,
+    "__storage_set" => &QuickBEAM.Storage.set_item/1,
+    "__storage_remove" => &QuickBEAM.Storage.remove_item/1,
+    "__storage_clear" => &QuickBEAM.Storage.clear/1,
+    "__storage_key" => &QuickBEAM.Storage.key/1,
+    "__storage_length" => &QuickBEAM.Storage.length/1
   }
 
   @priv_js_dir Path.join([__DIR__, "../../priv/js"]) |> Path.expand()

@@ -8,3 +8,5 @@ import "./broadcast-channel";
 import "./websocket";
 import "./console-ext";
 import "./worker";
+import "./locks";
+import "./storage";
