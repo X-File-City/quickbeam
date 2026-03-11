@@ -1,11 +1,12 @@
 defmodule QuickBEAM.Runtime do
   @moduledoc false
   use GenServer
+  require Logger
 
   @enforce_keys [:resource]
-  defstruct [:resource, handlers: %{}, monitors: %{}]
+  defstruct [:resource, handlers: %{}, monitors: %{}, workers: %{}]
 
-  @type t :: %__MODULE__{resource: reference(), handlers: map(), monitors: map()}
+  @type t :: %__MODULE__{resource: reference(), handlers: map(), monitors: map(), workers: map()}
 
   def child_spec(opts) do
     id = Keyword.get(opts, :id, Keyword.get(opts, :name, __MODULE__))
@@ -21,14 +22,17 @@ defmodule QuickBEAM.Runtime do
     GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
   end
 
-  @spec eval(GenServer.server(), String.t()) :: {:ok, term()} | {:error, String.t()}
-  def eval(server, code) when is_binary(code) do
-    GenServer.call(server, {:eval, code}, :infinity)
+  @spec eval(GenServer.server(), String.t(), keyword()) :: {:ok, term()} | {:error, String.t()}
+  def eval(server, code, opts \\ []) when is_binary(code) do
+    timeout_ms = Keyword.get(opts, :timeout, 0)
+    GenServer.call(server, {:eval, code, timeout_ms}, :infinity)
   end
 
-  @spec call(GenServer.server(), String.t(), list()) :: {:ok, term()} | {:error, String.t()}
-  def call(server, fn_name, args \\ []) when is_binary(fn_name) and is_list(args) do
-    GenServer.call(server, {:call, fn_name, args}, :infinity)
+  @spec call(GenServer.server(), String.t(), list(), keyword()) ::
+          {:ok, term()} | {:error, String.t()}
+  def call(server, fn_name, args \\ [], opts \\ []) when is_binary(fn_name) and is_list(args) do
+    timeout_ms = Keyword.get(opts, :timeout, 0)
+    GenServer.call(server, {:call, fn_name, args, timeout_ms}, :infinity)
   end
 
   @spec compile(GenServer.server(), String.t()) :: {:ok, binary()} | {:error, String.t()}
@@ -114,7 +118,21 @@ defmodule QuickBEAM.Runtime do
     # {:with_caller, fun/2} — receives [args, caller_pid] instead of [args]
     "__broadcast_join" => {:with_caller, &QuickBEAM.BroadcastChannel.join/2},
     "__broadcast_post" => {:with_caller, &QuickBEAM.BroadcastChannel.post/2},
-    "__broadcast_leave" => {:with_caller, &QuickBEAM.BroadcastChannel.leave/2}
+    "__broadcast_leave" => {:with_caller, &QuickBEAM.BroadcastChannel.leave/2},
+    "__worker_spawn" => {:with_caller, &QuickBEAM.WorkerAPI.spawn_worker/2},
+    "__worker_post" => &QuickBEAM.WorkerAPI.post_to_worker/1,
+    "__worker_terminate" => &QuickBEAM.WorkerAPI.terminate_worker/1,
+    "__locks_request" => {:with_caller, &QuickBEAM.LocksAPI.request_lock/2},
+    "__locks_release" => {:with_caller, &QuickBEAM.LocksAPI.release_lock/2},
+    "__locks_query" => &QuickBEAM.LocksAPI.query_locks/1,
+    "__storage_get" => &QuickBEAM.Storage.get_item/1,
+    "__storage_set" => &QuickBEAM.Storage.set_item/1,
+    "__storage_remove" => &QuickBEAM.Storage.remove_item/1,
+    "__storage_clear" => &QuickBEAM.Storage.clear/1,
+    "__storage_key" => &QuickBEAM.Storage.key/1,
+    "__storage_length" => &QuickBEAM.Storage.length/1,
+    "__eventsource_open" => {:with_caller, &QuickBEAM.EventSource.open/2},
+    "__eventsource_close" => &QuickBEAM.EventSource.close/1
   }
 
   @priv_js_dir Path.join([__DIR__, "../../priv/js"]) |> Path.expand()
@@ -124,8 +142,8 @@ defmodule QuickBEAM.Runtime do
     crypto-subtle
     compression
     buffer
-    web-apis
     process
+    web-apis
   ]
 
   @builtin_js (for name <- @js_load_order do
@@ -163,7 +181,7 @@ defmodule QuickBEAM.Runtime do
 
   defp eval_script(state, path) do
     with {:ok, code} <- File.read(path),
-         {:ok, _} <- QuickBEAM.Native.eval(state.resource, code) do
+         {:ok, _} <- QuickBEAM.Native.eval(state.resource, code, 0) do
       :ok
     else
       {:error, reason} when is_atom(reason) ->
@@ -182,10 +200,10 @@ defmodule QuickBEAM.Runtime do
 
   defp install_builtins(state) do
     for js <- @builtin_js do
-      QuickBEAM.Native.eval(state.resource, js)
+      QuickBEAM.Native.eval(state.resource, js, 0)
     end
 
-    QuickBEAM.Native.eval(state.resource, @snapshot_builtins_js)
+    QuickBEAM.Native.eval(state.resource, @snapshot_builtins_js, 0)
   end
 
   @impl true
@@ -200,12 +218,12 @@ defmodule QuickBEAM.Runtime do
   end
 
   @impl true
-  def handle_call({:eval, code}, from, state) do
+  def handle_call({:eval, code, timeout_ms}, from, state) do
     resource = state.resource
 
     Task.start(fn ->
       result =
-        case QuickBEAM.Native.eval(resource, code) do
+        case QuickBEAM.Native.eval(resource, code, timeout_ms) do
           {:ok, value} -> {:ok, value}
           {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
         end
@@ -249,12 +267,12 @@ defmodule QuickBEAM.Runtime do
     {:noreply, state}
   end
 
-  def handle_call({:call, fn_name, args}, from, state) do
+  def handle_call({:call, fn_name, args, timeout_ms}, from, state) do
     resource = state.resource
 
     Task.start(fn ->
       result =
-        case QuickBEAM.Native.call_function(resource, fn_name, args) do
+        case QuickBEAM.Native.call_function(resource, fn_name, args, timeout_ms) do
           {:ok, value} -> {:ok, value}
           {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
         end
@@ -338,6 +356,11 @@ defmodule QuickBEAM.Runtime do
   end
 
   @impl true
+  def handle_info({:console, level, message}, state) do
+    Logger.log(console_level(level), message)
+    {:noreply, state}
+  end
+
   def handle_info({:beam_call, call_id, "__process_monitor", [pid, callback_id]}, state) do
     ref = Process.monitor(pid)
     monitors = Map.put(state.monitors, ref, callback_id)
@@ -384,24 +407,76 @@ defmodule QuickBEAM.Runtime do
     {:noreply, state}
   end
 
+  def handle_info({:worker_monitor, child_pid}, state) do
+    ref = Process.monitor(child_pid)
+    workers = Map.put(state.workers, ref, child_pid)
+    {:noreply, %{state | workers: workers}}
+  end
+
+  def handle_info({:worker_message_from_child, child_pid, data}, state) do
+    QuickBEAM.Native.send_message(state.resource, ["__worker_msg", child_pid, data])
+    {:noreply, state}
+  end
+
+  def handle_info({:worker_error_from_child, child_pid, error}, state) do
+    message =
+      if is_struct(error), do: Map.get(error, :message, "Worker error"), else: "Worker error"
+
+    QuickBEAM.Native.send_message(state.resource, ["__worker_err", child_pid, message])
+    {:noreply, state}
+  end
+
+  def handle_info({:eventsource_open, id}, state) do
+    QuickBEAM.Native.send_message(state.resource, ["__eventsource_open", id])
+    {:noreply, state}
+  end
+
+  def handle_info({:eventsource_event, id, event}, state) do
+    QuickBEAM.Native.send_message(state.resource, [
+      "__eventsource_event",
+      id,
+      event.type,
+      event.data,
+      event.id
+    ])
+
+    {:noreply, state}
+  end
+
+  def handle_info({:eventsource_error, id, reason}, state) do
+    QuickBEAM.Native.send_message(state.resource, ["__eventsource_error", id, reason])
+    {:noreply, state}
+  end
+
   def handle_info({:broadcast_message, channel, data}, state) do
     resource = state.resource
 
     Task.start(fn ->
-      QuickBEAM.Native.call_function(resource, "__qb_broadcast_dispatch", [channel, data])
+      QuickBEAM.Native.call_function(resource, "__qb_broadcast_dispatch", [channel, data], 0)
     end)
 
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{monitors: monitors} = state) do
-    case Map.pop(monitors, ref) do
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case Map.pop(state.workers, ref) do
       {nil, _} ->
-        {:noreply, state}
+        case Map.pop(state.monitors, ref) do
+          {nil, _} ->
+            {:noreply, state}
 
-      {callback_id, monitors} ->
-        QuickBEAM.Native.send_message(state.resource, ["__qb_down", callback_id, reason])
-        {:noreply, %{state | monitors: monitors}}
+          {callback_id, monitors} ->
+            QuickBEAM.Native.send_message(state.resource, ["__qb_down", callback_id, reason])
+            {:noreply, %{state | monitors: monitors}}
+        end
+
+      {child_pid, workers} ->
+        unless reason == :normal do
+          message = inspect(reason)
+          QuickBEAM.Native.send_message(state.resource, ["__worker_err", child_pid, message])
+        end
+
+        {:noreply, %{state | workers: workers}}
     end
   end
 
@@ -417,4 +492,8 @@ defmodule QuickBEAM.Runtime do
   end
 
   def terminate(_reason, _state), do: :ok
+
+  defp console_level("error"), do: :error
+  defp console_level("warning"), do: :warning
+  defp console_level(_), do: :info
 end

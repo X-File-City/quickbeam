@@ -9,8 +9,11 @@ defmodule QuickBEAM.Application do
       %{
         id: :quickbeam_pg,
         start: {:pg, :start_link, [QuickBEAM.BroadcastChannel]}
-      }
+      },
+      QuickBEAM.LockManager
     ]
+
+    QuickBEAM.Storage.init()
 
     opts = [strategy: :one_for_one, name: QuickBEAM.Supervisor]
     Supervisor.start_link(children, opts)

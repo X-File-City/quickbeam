@@ -1,19 +1,14 @@
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 const srcDir = "priv/ts";
 const outDir = "priv/js";
 
-const bundledModules = new Set([
-  "event-target.ts",
-  "abort.ts",
-  "streams.ts",
-  "blob.ts",
-  "headers.ts",
-  "fetch.ts",
-  "broadcast-channel.ts",
-  "websocket.ts",
-]);
+const webApisSource = await readFile(path.join(srcDir, "web-apis.ts"), "utf-8");
+const bundledModules = new Set<string>();
+for (const match of webApisSource.matchAll(/["']\.\/([\w-]+)["']/g)) {
+  bundledModules.add(`${match[1]}.ts`);
+}
 
 const files = await readdir(srcDir);
 const entrypoints = files
