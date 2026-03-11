@@ -12,6 +12,13 @@ const e = types.e;
 const qjs = types.qjs;
 const gpa = types.gpa;
 
+pub const Result = struct {
+    ok: bool = false,
+    json: []const u8 = "",
+    env: ?*e.ErlNifEnv = null,
+    term: ?e.ErlNifTerm = null,
+};
+
 pub const PendingCall = struct {
     resolve: qjs.JSValue,
     reject: qjs.JSValue,
@@ -198,7 +205,7 @@ pub const WorkerState = struct {
         self.drain_jobs();
     }
 
-    pub fn do_eval(self: *WorkerState, code: []const u8, result: *types.Result) void {
+    pub fn do_eval(self: *WorkerState, code: []const u8, result: *Result) void {
         const code_z = gpa.dupeZ(u8, code) catch {
             result.ok = false;
             result.json = "Out of memory";
@@ -227,7 +234,7 @@ pub const WorkerState = struct {
         self.set_ok_term(val, result);
     }
 
-    pub fn do_compile(self: *WorkerState, code: []const u8, result: *types.Result) void {
+    pub fn do_compile(self: *WorkerState, code: []const u8, result: *Result) void {
         const code_z = gpa.dupeZ(u8, code) catch {
             result.ok = false;
             result.json = "Out of memory";
@@ -262,7 +269,7 @@ pub const WorkerState = struct {
         result.ok = true;
     }
 
-    pub fn do_load_bytecode(self: *WorkerState, bytecode: []const u8, result: *types.Result) void {
+    pub fn do_load_bytecode(self: *WorkerState, bytecode: []const u8, result: *Result) void {
         const func = qjs.JS_ReadObject(self.ctx, bytecode.ptr, bytecode.len, qjs.JS_READ_OBJ_BYTECODE);
         if (js.js_is_exception(func)) {
             self.set_error_term(result);
@@ -286,7 +293,7 @@ pub const WorkerState = struct {
         self.set_ok_term(val, result);
     }
 
-    pub fn do_call(self: *WorkerState, name: []const u8, args_env: ?*e.ErlNifEnv, args_term: e.ErlNifTerm, result: *types.Result) void {
+    pub fn do_call(self: *WorkerState, name: []const u8, args_env: ?*e.ErlNifEnv, args_term: e.ErlNifTerm, result: *Result) void {
         defer if (args_env) |ae| beam.free_env(ae);
 
         // Get the function by name
@@ -344,7 +351,7 @@ pub const WorkerState = struct {
         self.set_ok_term(val, result);
     }
 
-    pub fn do_load_module(self: *WorkerState, name: []const u8, code: []const u8, result: *types.Result) void {
+    pub fn do_load_module(self: *WorkerState, name: []const u8, code: []const u8, result: *Result) void {
         _ = name;
         const code_z = gpa.dupeZ(u8, code) catch {
             result.ok = false;
@@ -372,7 +379,7 @@ pub const WorkerState = struct {
         result.json = "ok";
     }
 
-    pub fn do_reset(self: *WorkerState, result: *types.Result) void {
+    pub fn do_reset(self: *WorkerState, result: *Result) void {
         var call_it = self.pending_calls.valueIterator();
         while (call_it.next()) |pc| {
             qjs.JS_FreeValue(self.ctx, pc.resolve);
@@ -403,7 +410,7 @@ pub const WorkerState = struct {
         result.json = "ok";
     }
 
-    fn await_promise(self: *WorkerState, promise: qjs.JSValue, result: *types.Result, unwrap_async: bool) void {
+    fn await_promise(self: *WorkerState, promise: qjs.JSValue, result: *Result, unwrap_async: bool) void {
         for (0..10000) |_| {
             const state = qjs.JS_PromiseState(self.ctx, promise);
 
@@ -459,14 +466,14 @@ pub const WorkerState = struct {
         result.json = "Promise resolution timeout";
     }
 
-    fn set_ok_term(self: *WorkerState, val: qjs.JSValue, result: *types.Result) void {
+    fn set_ok_term(self: *WorkerState, val: qjs.JSValue, result: *Result) void {
         const term_env = beam.alloc_env();
         result.ok = true;
         result.term = js_to_beam.convert(self.ctx, val, term_env);
         result.env = term_env;
     }
 
-    fn set_error_term(self: *WorkerState, result: *types.Result) void {
+    fn set_error_term(self: *WorkerState, result: *Result) void {
         const exc = qjs.JS_GetException(self.ctx);
         defer qjs.JS_FreeValue(self.ctx, exc);
 
@@ -476,21 +483,21 @@ pub const WorkerState = struct {
         result.env = term_env;
     }
 
-    pub fn do_dom_op(self: *WorkerState, payload: *types.DomOpPayload) void {
+    pub fn do_dom_op_result(self: *WorkerState, op: types.DomOp, selector: []const u8, attr_name: []const u8, result: *Result) void {
         const dd = self.dom_data orelse {
-            payload.result.ok = false;
-            payload.result.json = "No DOM document";
+            result.ok = false;
+            result.json = "No DOM document";
             return;
         };
 
         const env = beam.alloc_env();
-        payload.result.ok = true;
-        payload.result.env = env;
-        payload.result.term = switch (payload.op) {
-            .find => dom.do_dom_query(dd, payload.selector, env),
-            .find_all => dom.do_dom_query_all(dd, payload.selector, env),
-            .text => dom.do_dom_text(dd, payload.selector, env),
-            .attr => dom.do_dom_attr(dd, payload.selector, payload.attr_name, env),
+        result.ok = true;
+        result.env = env;
+        result.term = switch (op) {
+            .find => dom.do_dom_query(dd, selector, env),
+            .find_all => dom.do_dom_query_all(dd, selector, env),
+            .text => dom.do_dom_text(dd, selector, env),
+            .attr => dom.do_dom_attr(dd, selector, attr_name, env),
             .html => dom.do_dom_html(dd, env),
         };
     }
@@ -556,57 +563,74 @@ pub fn worker_main(rd: *types.RuntimeData, owner_pid: beam.pid) void {
         if (msg) |m| {
             switch (m) {
                 .eval => |p| {
+                    var result = Result{};
                     state.set_deadline(p.timeout_ns);
-                    state.do_eval(p.code, p.result);
+                    state.do_eval(p.code, &result);
                     state.clear_deadline();
-                    p.done.set();
+                    gpa.free(p.code);
+                    types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);
                 },
                 .compile => |p| {
-                    state.do_compile(p.code, p.result);
-                    p.done.set();
+                    var result = Result{};
+                    state.do_compile(p.code, &result);
+                    gpa.free(p.code);
+                    types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);
                 },
                 .call_fn => |p| {
+                    var result = Result{};
                     state.set_deadline(p.timeout_ns);
-                    state.do_call(p.name, p.args_env, p.args_term, p.result);
+                    state.do_call(p.name, p.args_env, p.args_term, &result);
                     state.clear_deadline();
-                    p.done.set();
+                    gpa.free(p.name);
+                    types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);
                 },
                 .load_module => |p| {
-                    state.do_load_module(p.name, p.code, p.result);
-                    p.done.set();
+                    var result = Result{};
+                    state.do_load_module(p.name, p.code, &result);
+                    gpa.free(p.name);
+                    gpa.free(p.code);
+                    types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);
                 },
                 .load_bytecode => |p| {
-                    state.do_load_bytecode(p.code, p.result);
-                    p.done.set();
+                    var result = Result{};
+                    state.do_load_bytecode(p.code, &result);
+                    gpa.free(p.code);
+                    types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);
                 },
                 .reset => |p| {
-                    state.do_reset(p.result);
-                    p.done.set();
+                    var result = Result{};
+                    state.do_reset(&result);
+                    types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);
                 },
                 .resolve_call => |rc| state.resolve_pending(rc.id, rc.json),
                 .reject_call => |rc| state.reject_pending(rc.id, rc.json),
                 .resolve_call_term => |rc| state.resolve_pending_term(rc.env, rc.term, rc.id),
                 .send_message => |sm| state.deliver_message(sm),
                 .dom_op => |p| {
-                    state.do_dom_op(p);
-                    p.done.set();
+                    var result = Result{};
+                    state.do_dom_op_result(p.op, p.selector, p.attr_name, &result);
+                    gpa.free(p.selector);
+                    gpa.free(p.attr_name);
+                    types.send_reply(p.caller_pid, p.ref_env, p.ref_term, result.ok, result.env, result.term, result.json);
                 },
                 .memory_usage => |mu| {
-                    // SAFETY: immediately filled by JS_ComputeMemoryUsage
                     var usage: qjs.JSMemoryUsage = undefined;
                     qjs.JS_ComputeMemoryUsage(state.rt, &usage);
-                    mu.malloc_size = usage.malloc_size;
-                    mu.malloc_count = usage.malloc_count;
-                    mu.memory_used_size = usage.memory_used_size;
-                    mu.atom_count = usage.atom_count;
-                    mu.str_count = usage.str_count;
-                    mu.obj_count = usage.obj_count;
-                    mu.prop_count = usage.prop_count;
-                    mu.shape_count = usage.shape_count;
-                    mu.js_func_count = usage.js_func_count;
-                    mu.c_func_count = usage.c_func_count;
-                    mu.array_count = usage.array_count;
-                    mu.done.?.set();
+                    const renv = beam.alloc_env();
+                    const result_term = beam.make(.{
+                        .malloc_size = usage.malloc_size,
+                        .malloc_count = usage.malloc_count,
+                        .memory_used_size = usage.memory_used_size,
+                        .atom_count = usage.atom_count,
+                        .str_count = usage.str_count,
+                        .obj_count = usage.obj_count,
+                        .prop_count = usage.prop_count,
+                        .shape_count = usage.shape_count,
+                        .js_func_count = usage.js_func_count,
+                        .c_func_count = usage.c_func_count,
+                        .array_count = usage.array_count,
+                    }, .{ .env = renv });
+                    types.send_reply(mu.caller_pid, mu.ref_env, mu.ref_term, true, renv, result_term.v, "");
                 },
                 .stop => break,
             }

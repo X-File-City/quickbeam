@@ -36,12 +36,12 @@ defmodule QuickBEAM.Native do
     ],
     resources: [:RuntimeResource],
     nifs: [
-      eval: [:dirty_io],
-      compile: [:dirty_io],
-      call_function: [:dirty_io],
-      load_module: [:dirty_io],
-      load_bytecode: [:dirty_io],
-      reset_runtime: [:dirty_io],
+      eval: [],
+      compile: [],
+      call_function: [],
+      load_module: [],
+      load_bytecode: [],
+      reset_runtime: [],
       stop_runtime: [:dirty_io],
       start_runtime: [],
       resolve_call: [],
@@ -49,11 +49,11 @@ defmodule QuickBEAM.Native do
       resolve_call_term: [],
       reject_call_term: [],
       send_message: [],
-      memory_usage: [:dirty_io],
-      dom_find: [:dirty_io],
-      dom_find_all: [:dirty_io],
-      dom_text: [:dirty_io],
-      dom_attr: [:dirty_io],
-      dom_html: [:dirty_io]
+      memory_usage: [],
+      dom_find: [],
+      dom_find_all: [],
+      dom_text: [],
+      dom_attr: [],
+      dom_html: []
     ]
 end

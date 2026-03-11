@@ -27,43 +27,61 @@ pub const RuntimeData = struct {
     deadline: ?i128 = null,
 };
 
-pub const MemoryUsageResult = struct {
-    malloc_size: i64 = 0,
-    malloc_count: i64 = 0,
-    memory_used_size: i64 = 0,
-    atom_count: i64 = 0,
-    str_count: i64 = 0,
-    obj_count: i64 = 0,
-    prop_count: i64 = 0,
-    shape_count: i64 = 0,
-    js_func_count: i64 = 0,
-    c_func_count: i64 = 0,
-    array_count: i64 = 0,
-    done: ?*std.Thread.ResetEvent = null,
-};
-
 pub const Message = union(enum) {
-    eval: RequestPayload,
-    compile: RequestPayload,
-    call_fn: CallPayload,
-    load_module: ModulePayload,
-    load_bytecode: RequestPayload,
-    reset: RequestPayload,
+    eval: AsyncRequestPayload,
+    compile: AsyncRequestPayload,
+    call_fn: AsyncCallPayload,
+    load_module: AsyncModulePayload,
+    load_bytecode: AsyncRequestPayload,
+    reset: AsyncRequestPayload,
     resolve_call: CallResponse,
     reject_call: CallResponse,
     resolve_call_term: CallResponseTerm,
     send_message: MessagePayload,
-    memory_usage: *MemoryUsageResult,
-    dom_op: *DomOpPayload,
+    memory_usage: AsyncMemoryPayload,
+    dom_op: AsyncDomPayload,
     stop,
 };
 
-pub const DomOpPayload = struct {
+pub const AsyncRequestPayload = struct {
+    code: []const u8,
+    caller_pid: beam.pid,
+    ref_env: ?*e.ErlNifEnv,
+    ref_term: e.ErlNifTerm,
+    timeout_ns: u64 = 0,
+};
+
+pub const AsyncCallPayload = struct {
+    name: []const u8,
+    args_env: ?*e.ErlNifEnv,
+    args_term: e.ErlNifTerm,
+    caller_pid: beam.pid,
+    ref_env: ?*e.ErlNifEnv,
+    ref_term: e.ErlNifTerm,
+    timeout_ns: u64 = 0,
+};
+
+pub const AsyncModulePayload = struct {
+    name: []const u8,
+    code: []const u8,
+    caller_pid: beam.pid,
+    ref_env: ?*e.ErlNifEnv,
+    ref_term: e.ErlNifTerm,
+};
+
+pub const AsyncMemoryPayload = struct {
+    caller_pid: beam.pid,
+    ref_env: ?*e.ErlNifEnv,
+    ref_term: e.ErlNifTerm,
+};
+
+pub const AsyncDomPayload = struct {
     op: DomOp,
     selector: []const u8 = "",
     attr_name: []const u8 = "",
-    result: *Result,
-    done: *std.Thread.ResetEvent,
+    caller_pid: beam.pid,
+    ref_env: ?*e.ErlNifEnv,
+    ref_term: e.ErlNifTerm,
 };
 
 pub const DomOp = enum {
@@ -72,29 +90,6 @@ pub const DomOp = enum {
     text,
     attr,
     html,
-};
-
-pub const RequestPayload = struct {
-    code: []const u8,
-    result: *Result,
-    done: *std.Thread.ResetEvent,
-    timeout_ns: u64 = 0,
-};
-
-pub const CallPayload = struct {
-    name: []const u8,
-    args_env: ?*e.ErlNifEnv,
-    args_term: e.ErlNifTerm,
-    result: *Result,
-    done: *std.Thread.ResetEvent,
-    timeout_ns: u64 = 0,
-};
-
-pub const ModulePayload = struct {
-    name: []const u8,
-    code: []const u8,
-    result: *Result,
-    done: *std.Thread.ResetEvent,
 };
 
 pub const CallResponse = struct {
@@ -114,18 +109,32 @@ pub const MessagePayload = struct {
     term: e.ErlNifTerm,
 };
 
-pub const Result = struct {
-    ok: bool = false,
-    json: []const u8 = "",
-    // New: direct BEAM term result (bypasses JSON)
-    env: ?*e.ErlNifEnv = null,
-    term: ?e.ErlNifTerm = null,
-};
-
 pub const MessageNode = struct {
     msg: Message,
     next: ?*MessageNode,
 };
+
+// ──────────────────── Reply helper ────────────────────
+
+pub fn send_reply(caller_pid: beam.pid, ref_env: ?*e.ErlNifEnv, ref_term: e.ErlNifTerm, ok: bool, result_env: ?*e.ErlNifEnv, result_term: ?e.ErlNifTerm, result_json: []const u8) void {
+    const msg_env = beam.alloc_env();
+    const ref_copy = e.enif_make_copy(msg_env, ref_term);
+
+    const result_val = if (result_env) |renv| blk: {
+        const copied = e.enif_make_copy(msg_env, result_term.?);
+        beam.free_env(renv);
+        break :blk copied;
+    } else beam.make(result_json, .{ .env = msg_env }).v;
+
+    const tag = if (ok) beam.make_into_atom("ok", .{ .env = msg_env }).v else beam.make_into_atom("error", .{ .env = msg_env }).v;
+    const inner = e.enif_make_tuple2(msg_env, tag, result_val);
+    const msg = e.enif_make_tuple2(msg_env, ref_copy, inner);
+
+    var pid = caller_pid;
+    _ = e.enif_send(null, &pid, msg_env, msg);
+    beam.free_env(msg_env);
+    if (ref_env) |re| beam.free_env(re);
+}
 
 // ──────────────────── Message queue ────────────────────
 

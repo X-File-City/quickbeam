@@ -4,9 +4,15 @@ defmodule QuickBEAM.Runtime do
   require Logger
 
   @enforce_keys [:resource]
-  defstruct [:resource, handlers: %{}, monitors: %{}, workers: %{}]
+  defstruct [:resource, handlers: %{}, monitors: %{}, workers: %{}, pending: %{}]
 
-  @type t :: %__MODULE__{resource: reference(), handlers: map(), monitors: map(), workers: map()}
+  @type t :: %__MODULE__{
+          resource: reference(),
+          handlers: map(),
+          monitors: map(),
+          workers: map(),
+          pending: map()
+        }
 
   def child_spec(opts) do
     id = Keyword.get(opts, :id, Keyword.get(opts, :name, __MODULE__))
@@ -212,7 +218,7 @@ defmodule QuickBEAM.Runtime do
 
   defp eval_script(state, path) do
     with {:ok, code} <- File.read(path),
-         {:ok, _} <- QuickBEAM.Native.eval(state.resource, code, 0) do
+         {:ok, _} <- sync_eval(state.resource, code) do
       :ok
     else
       {:error, reason} when is_atom(reason) ->
@@ -231,10 +237,23 @@ defmodule QuickBEAM.Runtime do
 
   defp install_builtins(state) do
     for js <- @builtin_js do
-      QuickBEAM.Native.eval(state.resource, js, 0)
+      sync_eval(state.resource, js)
     end
 
-    QuickBEAM.Native.eval(state.resource, @snapshot_builtins_js, 0)
+    sync_eval(state.resource, @snapshot_builtins_js)
+  end
+
+  defp sync_eval(resource, code) do
+    ref = QuickBEAM.Native.eval(resource, code, 0)
+    await_ref(ref)
+  end
+
+  defp await_ref(ref) do
+    receive do
+      {^ref, result} -> result
+    after
+      30_000 -> {:error, "NIF timeout"}
+    end
   end
 
   @impl true
@@ -250,134 +269,100 @@ defmodule QuickBEAM.Runtime do
 
   @impl true
   def handle_call({:eval, code, timeout_ms}, from, state) do
-    resource = state.resource
+    ref = QuickBEAM.Native.eval(state.resource, code, timeout_ms)
 
-    Task.start(fn ->
-      result =
-        case QuickBEAM.Native.eval(resource, code, timeout_ms) do
-          {:ok, value} -> {:ok, value}
-          {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
-        end
+    transform = fn
+      {:ok, value} -> {:ok, value}
+      {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
+    end
 
-      GenServer.reply(from, result)
-    end)
-
-    {:noreply, state}
+    {:noreply, put_pending(state, ref, from, transform)}
   end
 
   def handle_call({:compile, code}, from, state) do
-    resource = state.resource
+    ref = QuickBEAM.Native.compile(state.resource, code)
 
-    Task.start(fn ->
-      result =
-        case QuickBEAM.Native.compile(resource, code) do
-          {:ok, {:bytes, bytecode}} -> {:ok, bytecode}
-          {:ok, bytecode} -> {:ok, bytecode}
-          {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
-        end
+    transform = fn
+      {:ok, {:bytes, bytecode}} -> {:ok, bytecode}
+      {:ok, bytecode} -> {:ok, bytecode}
+      {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
+    end
 
-      GenServer.reply(from, result)
-    end)
-
-    {:noreply, state}
+    {:noreply, put_pending(state, ref, from, transform)}
   end
 
   def handle_call({:load_bytecode, bytecode}, from, state) do
-    resource = state.resource
+    ref = QuickBEAM.Native.load_bytecode(state.resource, bytecode)
 
-    Task.start(fn ->
-      result =
-        case QuickBEAM.Native.load_bytecode(resource, bytecode) do
-          {:ok, value} -> {:ok, value}
-          {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
-        end
+    transform = fn
+      {:ok, value} -> {:ok, value}
+      {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
+    end
 
-      GenServer.reply(from, result)
-    end)
-
-    {:noreply, state}
+    {:noreply, put_pending(state, ref, from, transform)}
   end
 
   def handle_call({:call, fn_name, args, timeout_ms}, from, state) do
-    resource = state.resource
+    ref = QuickBEAM.Native.call_function(state.resource, fn_name, args, timeout_ms)
 
-    Task.start(fn ->
-      result =
-        case QuickBEAM.Native.call_function(resource, fn_name, args, timeout_ms) do
-          {:ok, value} -> {:ok, value}
-          {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
-        end
+    transform = fn
+      {:ok, value} -> {:ok, value}
+      {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
+    end
 
-      GenServer.reply(from, result)
-    end)
-
-    {:noreply, state}
+    {:noreply, put_pending(state, ref, from, transform)}
   end
 
   def handle_call({:load_module, name, code}, from, state) do
-    resource = state.resource
+    ref = QuickBEAM.Native.load_module(state.resource, name, code)
 
-    Task.start(fn ->
-      result =
-        case QuickBEAM.Native.load_module(resource, name, code) do
-          {:ok, _} -> :ok
-          {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
-        end
+    transform = fn
+      {:ok, _} -> :ok
+      {:error, value} -> {:error, QuickBEAM.JSError.from_js_value(value)}
+    end
 
-      GenServer.reply(from, result)
-    end)
-
-    {:noreply, state}
+    {:noreply, put_pending(state, ref, from, transform)}
   end
 
   def handle_call(:reset, from, state) do
-    resource = state.resource
+    ref = QuickBEAM.Native.reset_runtime(state.resource)
 
-    Task.start(fn ->
-      result =
-        case QuickBEAM.Native.reset_runtime(resource) do
-          {:ok, _} -> :ok
-          {:error, msg} -> {:error, msg}
-        end
+    transform = fn
+      {:ok, _} -> :ok
+      {:error, msg} -> {:error, msg}
+    end
 
-      GenServer.reply(from, result)
-    end)
-
-    {:noreply, state}
+    {:noreply, put_pending(state, ref, from, transform)}
   end
 
-  def handle_call(:memory_usage, _from, state) do
-    {:reply, QuickBEAM.Native.memory_usage(state.resource), state}
+  def handle_call(:memory_usage, from, state) do
+    ref = QuickBEAM.Native.memory_usage(state.resource)
+    {:noreply, put_pending(state, ref, from, fn {:ok, v} -> v; other -> other end)}
   end
 
   def handle_call({:dom_find, selector}, from, state) do
-    resource = state.resource
-    Task.start(fn -> GenServer.reply(from, QuickBEAM.Native.dom_find(resource, selector)) end)
-    {:noreply, state}
+    ref = QuickBEAM.Native.dom_find(state.resource, selector)
+    {:noreply, put_pending(state, ref, from)}
   end
 
   def handle_call({:dom_find_all, selector}, from, state) do
-    resource = state.resource
-    Task.start(fn -> GenServer.reply(from, QuickBEAM.Native.dom_find_all(resource, selector)) end)
-    {:noreply, state}
+    ref = QuickBEAM.Native.dom_find_all(state.resource, selector)
+    {:noreply, put_pending(state, ref, from)}
   end
 
   def handle_call({:dom_text, selector}, from, state) do
-    resource = state.resource
-    Task.start(fn -> GenServer.reply(from, QuickBEAM.Native.dom_text(resource, selector)) end)
-    {:noreply, state}
+    ref = QuickBEAM.Native.dom_text(state.resource, selector)
+    {:noreply, put_pending(state, ref, from)}
   end
 
   def handle_call({:dom_attr, selector, attr_name}, from, state) do
-    resource = state.resource
-    Task.start(fn -> GenServer.reply(from, QuickBEAM.Native.dom_attr(resource, selector, attr_name)) end)
-    {:noreply, state}
+    ref = QuickBEAM.Native.dom_attr(state.resource, selector, attr_name)
+    {:noreply, put_pending(state, ref, from)}
   end
 
   def handle_call(:dom_html, from, state) do
-    resource = state.resource
-    Task.start(fn -> GenServer.reply(from, QuickBEAM.Native.dom_html(resource)) end)
-    {:noreply, state}
+    ref = QuickBEAM.Native.dom_html(state.resource)
+    {:noreply, put_pending(state, ref, from)}
   end
 
   @impl true
@@ -506,6 +491,21 @@ defmodule QuickBEAM.Runtime do
     end
   end
 
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    case Map.pop(state.pending, ref) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {{from, nil}, pending} ->
+        GenServer.reply(from, result)
+        {:noreply, %{state | pending: pending}}
+
+      {{from, transform}, pending} ->
+        GenServer.reply(from, transform.(result))
+        {:noreply, %{state | pending: pending}}
+    end
+  end
+
   def handle_info(msg, state) do
     QuickBEAM.Native.send_message(state.resource, msg)
     {:noreply, state}
@@ -518,6 +518,10 @@ defmodule QuickBEAM.Runtime do
   end
 
   def terminate(_reason, _state), do: :ok
+
+  defp put_pending(state, ref, from, transform \\ nil) do
+    %{state | pending: Map.put(state.pending, ref, {from, transform})}
+  end
 
   defp console_level("error"), do: :error
   defp console_level("warning"), do: :warning

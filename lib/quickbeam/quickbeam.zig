@@ -5,7 +5,6 @@ const beam = @import("beam");
 const e = types.e;
 const gpa = types.gpa;
 const RuntimeData = types.RuntimeData;
-const Result = types.Result;
 const enqueue = types.enqueue;
 
 // ──────────────────── Resource ────────────────────
@@ -21,35 +20,13 @@ pub const RuntimeResource = beam.Resource(*RuntimeData, @import("root"), .{
     },
 });
 
-// ──────────────────── Result helper ────────────────────
-
-fn make_result(result: *Result) beam.term {
-    if (result.term) |t| {
-        const copied = beam.term{ .v = e.enif_make_copy(beam.context.env, t) };
-        beam.free_env(result.env.?);
-        if (result.ok) {
-            return beam.make(.{ .ok, copied }, .{});
-        } else {
-            return beam.make(.{ .@"error", copied }, .{});
-        }
-    }
-    if (result.ok) {
-        return beam.make(.{ .ok, result.json }, .{});
-    } else {
-        return beam.make(.{ .@"error", result.json }, .{});
-    }
-}
-
 // ──────────────────── NIF entry points ────────────────────
 
 fn get_map_uint(env: *e.ErlNifEnv, map: e.ErlNifTerm, key: [:0]const u8) ?usize {
-    // SAFETY: out-param written by enif_make_existing_atom_len before use
     var key_atom: e.ErlNifTerm = undefined;
     if (e.enif_make_existing_atom_len(env, key.ptr, key.len, &key_atom, e.ERL_NIF_LATIN1) == 0) return null;
-    // SAFETY: out-param written by enif_get_map_value before use
     var val: e.ErlNifTerm = undefined;
     if (e.enif_get_map_value(env, map, key_atom, &val) == 0) return null;
-    // SAFETY: out-param written by enif_get_uint64 before use
     var result: u64 = undefined;
     if (e.enif_get_uint64(env, val, &result) == 0) return null;
     return @intCast(result);
@@ -87,102 +64,136 @@ pub fn start_runtime(owner_pid: beam.pid, opts: beam.term) !RuntimeResource {
 }
 
 pub fn eval(resource: RuntimeResource, code: []const u8, timeout_ms: u64) beam.term {
-    var result = Result{};
-    var done = std.Thread.ResetEvent{};
     const data = resource.unpack();
+    const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
+
+    var caller_pid: beam.pid = undefined;
+    _ = e.enif_self(env, &caller_pid);
+    const ref_env = beam.alloc_env();
+    const ref_term = e.enif_make_ref(ref_env);
+
+    const code_copy = gpa.dupe(u8, code) catch return beam.make(.{ .@"error", "OOM" }, .{});
 
     enqueue(data, .{ .eval = .{
-        .code = code,
-        .result = &result,
-        .done = &done,
+        .code = code_copy,
+        .caller_pid = caller_pid,
+        .ref_env = ref_env,
+        .ref_term = ref_term,
         .timeout_ns = if (timeout_ms > 0) timeout_ms * 1_000_000 else 0,
     } });
 
-    done.wait();
-    return make_result(&result);
+    return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
 pub fn compile(resource: RuntimeResource, code: []const u8) beam.term {
-    var result = Result{};
-    var done = std.Thread.ResetEvent{};
     const data = resource.unpack();
+    const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
+
+    var caller_pid: beam.pid = undefined;
+    _ = e.enif_self(env, &caller_pid);
+    const ref_env = beam.alloc_env();
+    const ref_term = e.enif_make_ref(ref_env);
+
+    const code_copy = gpa.dupe(u8, code) catch return beam.make(.{ .@"error", "OOM" }, .{});
 
     enqueue(data, .{ .compile = .{
-        .code = code,
-        .result = &result,
-        .done = &done,
+        .code = code_copy,
+        .caller_pid = caller_pid,
+        .ref_env = ref_env,
+        .ref_term = ref_term,
     } });
 
-    done.wait();
-    return make_result(&result);
+    return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
 pub fn load_bytecode(resource: RuntimeResource, bytecode: []const u8) beam.term {
-    var result = Result{};
-    var done = std.Thread.ResetEvent{};
     const data = resource.unpack();
+    const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
+
+    var caller_pid: beam.pid = undefined;
+    _ = e.enif_self(env, &caller_pid);
+    const ref_env = beam.alloc_env();
+    const ref_term = e.enif_make_ref(ref_env);
+
+    const code_copy = gpa.dupe(u8, bytecode) catch return beam.make(.{ .@"error", "OOM" }, .{});
 
     enqueue(data, .{ .load_bytecode = .{
-        .code = bytecode,
-        .result = &result,
-        .done = &done,
+        .code = code_copy,
+        .caller_pid = caller_pid,
+        .ref_env = ref_env,
+        .ref_term = ref_term,
     } });
 
-    done.wait();
-    return make_result(&result);
+    return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
 pub fn call_function(resource: RuntimeResource, name: []const u8, args: beam.term, timeout_ms: u64) beam.term {
-    var result = Result{};
-    var done = std.Thread.ResetEvent{};
     const data = resource.unpack();
+    const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
 
-    // Copy args to a private env so they outlive the NIF call
+    var caller_pid: beam.pid = undefined;
+    _ = e.enif_self(env, &caller_pid);
+    const ref_env = beam.alloc_env();
+    const ref_term = e.enif_make_ref(ref_env);
+
     const args_env = beam.alloc_env();
     const args_copy = e.enif_make_copy(args_env, args.v);
 
+    const name_copy = gpa.dupe(u8, name) catch return beam.make(.{ .@"error", "OOM" }, .{});
+
     enqueue(data, .{ .call_fn = .{
-        .name = name,
+        .name = name_copy,
         .args_env = args_env,
         .args_term = args_copy,
-        .result = &result,
-        .done = &done,
+        .caller_pid = caller_pid,
+        .ref_env = ref_env,
+        .ref_term = ref_term,
         .timeout_ns = if (timeout_ms > 0) timeout_ms * 1_000_000 else 0,
     } });
 
-    done.wait();
-    return make_result(&result);
+    return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
 pub fn load_module(resource: RuntimeResource, name: []const u8, code: []const u8) beam.term {
-    var result = Result{};
-    var done = std.Thread.ResetEvent{};
     const data = resource.unpack();
+    const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
+
+    var caller_pid: beam.pid = undefined;
+    _ = e.enif_self(env, &caller_pid);
+    const ref_env = beam.alloc_env();
+    const ref_term = e.enif_make_ref(ref_env);
+
+    const name_copy = gpa.dupe(u8, name) catch return beam.make(.{ .@"error", "OOM" }, .{});
+    const code_copy = gpa.dupe(u8, code) catch { gpa.free(name_copy); return beam.make(.{ .@"error", "OOM" }, .{}); };
 
     enqueue(data, .{ .load_module = .{
-        .name = name,
-        .code = code,
-        .result = &result,
-        .done = &done,
+        .name = name_copy,
+        .code = code_copy,
+        .caller_pid = caller_pid,
+        .ref_env = ref_env,
+        .ref_term = ref_term,
     } });
 
-    done.wait();
-    return make_result(&result);
+    return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
 pub fn reset_runtime(resource: RuntimeResource) beam.term {
-    var result = Result{};
-    var done = std.Thread.ResetEvent{};
     const data = resource.unpack();
+    const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
+
+    var caller_pid: beam.pid = undefined;
+    _ = e.enif_self(env, &caller_pid);
+    const ref_env = beam.alloc_env();
+    const ref_term = e.enif_make_ref(ref_env);
 
     enqueue(data, .{ .reset = .{
         .code = "",
-        .result = &result,
-        .done = &done,
+        .caller_pid = caller_pid,
+        .ref_env = ref_env,
+        .ref_term = ref_term,
     } });
 
-    done.wait();
-    return make_result(&result);
+    return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
 pub fn stop_runtime(resource: RuntimeResource) beam.term {
@@ -198,7 +209,6 @@ pub fn stop_runtime(resource: RuntimeResource) beam.term {
 pub fn resolve_call(resource: RuntimeResource, call_id: u64, value_json: []const u8) beam.term {
     const data = resource.unpack();
 
-    // Check for sync call slot first
     data.sync_slots_mutex.lock();
     const slot = data.sync_slots.get(call_id);
     data.sync_slots_mutex.unlock();
@@ -218,7 +228,6 @@ pub fn resolve_call(resource: RuntimeResource, call_id: u64, value_json: []const
 pub fn reject_call(resource: RuntimeResource, call_id: u64, reason: []const u8) beam.term {
     const data = resource.unpack();
 
-    // Check for sync call slot first
     data.sync_slots_mutex.lock();
     const slot = data.sync_slots.get(call_id);
     data.sync_slots_mutex.unlock();
@@ -279,26 +288,21 @@ pub fn reject_call_term(resource: RuntimeResource, call_id: u64, reason: []const
 }
 
 pub fn memory_usage(resource: RuntimeResource) beam.term {
-    var result = types.MemoryUsageResult{};
-    var done = std.Thread.ResetEvent{};
-    result.done = &done;
+    const data = resource.unpack();
+    const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
 
-    enqueue(resource.unpack(), .{ .memory_usage = &result });
-    done.wait();
+    var caller_pid: beam.pid = undefined;
+    _ = e.enif_self(env, &caller_pid);
+    const ref_env = beam.alloc_env();
+    const ref_term = e.enif_make_ref(ref_env);
 
-    return beam.make(.{
-        .malloc_size = result.malloc_size,
-        .malloc_count = result.malloc_count,
-        .memory_used_size = result.memory_used_size,
-        .atom_count = result.atom_count,
-        .str_count = result.str_count,
-        .obj_count = result.obj_count,
-        .prop_count = result.prop_count,
-        .shape_count = result.shape_count,
-        .js_func_count = result.js_func_count,
-        .c_func_count = result.c_func_count,
-        .array_count = result.array_count,
-    }, .{});
+    enqueue(data, .{ .memory_usage = .{
+        .caller_pid = caller_pid,
+        .ref_env = ref_env,
+        .ref_term = ref_term,
+    } });
+
+    return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
 pub fn dom_find(resource: RuntimeResource, selector: []const u8) beam.term {
@@ -322,19 +326,27 @@ pub fn dom_html(resource: RuntimeResource) beam.term {
 }
 
 fn dom_op(resource: RuntimeResource, op: types.DomOp, selector: []const u8, attr_name: []const u8) beam.term {
-    var result = Result{};
-    var done = std.Thread.ResetEvent{};
-    var payload = types.DomOpPayload{
-        .op = op,
-        .selector = selector,
-        .attr_name = attr_name,
-        .result = &result,
-        .done = &done,
-    };
+    const data = resource.unpack();
+    const env = beam.context.env orelse return beam.make(.{ .@"error", "no env" }, .{});
 
-    enqueue(resource.unpack(), .{ .dom_op = &payload });
-    done.wait();
-    return make_result(&result);
+    var caller_pid: beam.pid = undefined;
+    _ = e.enif_self(env, &caller_pid);
+    const ref_env = beam.alloc_env();
+    const ref_term = e.enif_make_ref(ref_env);
+
+    const sel_copy = gpa.dupe(u8, selector) catch return beam.make(.{ .@"error", "OOM" }, .{});
+    const attr_copy = gpa.dupe(u8, attr_name) catch { gpa.free(sel_copy); return beam.make(.{ .@"error", "OOM" }, .{}); };
+
+    enqueue(data, .{ .dom_op = .{
+        .op = op,
+        .selector = sel_copy,
+        .attr_name = attr_copy,
+        .caller_pid = caller_pid,
+        .ref_env = ref_env,
+        .ref_term = ref_term,
+    } });
+
+    return beam.term{ .v = e.enif_make_copy(env, ref_term) };
 }
 
 pub fn send_message(resource: RuntimeResource, message: beam.term) beam.term {
