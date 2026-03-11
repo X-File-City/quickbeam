@@ -188,12 +188,18 @@ fn convert_object_to_map(ctx: *qjs.JSContext, val: qjs.JSValue, opts: Env, depth
     for (0..plen) |i| {
         const atom = tab[i].atom;
 
-        const key_val = qjs.JS_AtomToString(ctx, atom);
-        defer qjs.JS_FreeValue(ctx, key_val);
         var key_len: usize = 0;
-        const key_ptr = qjs.JS_ToCStringLen(ctx, &key_len, key_val);
+        const key_ptr = qjs.JS_AtomToCStringLen(ctx, &key_len, atom);
         if (key_ptr != null) {
-            keys[i] = beam.make(@as([*]const u8, @ptrCast(key_ptr))[0..key_len], opts).v;
+            const src = @as([*]const u8, @ptrCast(key_ptr))[0..key_len];
+            var bin_term: e.ErlNifTerm = undefined;
+            const bin_ptr = e.enif_make_new_binary(opts.env, key_len, &bin_term);
+            if (bin_ptr != null) {
+                @memcpy(bin_ptr[0..key_len], src);
+                keys[i] = bin_term;
+            } else {
+                keys[i] = beam.make(@as([]const u8, ""), opts).v;
+            }
             qjs.JS_FreeCString(ctx, key_ptr);
         } else {
             keys[i] = beam.make(@as([]const u8, ""), opts).v;

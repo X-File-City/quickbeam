@@ -182,28 +182,27 @@ fn convert_map(ctx: *qjs.JSContext, env: ?*e.ErlNifEnv, term: e.ErlNifTerm, dept
     var val: e.ErlNifTerm = undefined;
 
     while (e.enif_map_iterator_get_pair(env, &iter, &key, &val) != 0) {
-        // Keys must be strings (binaries) or atoms
-        var key_str: [256]u8 = undefined;
-        var key_len: usize = 0;
+        var atom: qjs.JSAtom = qjs.JS_ATOM_NULL;
 
-        // SAFETY: immediately filled by enif_inspect_binary or enif_alloc_binary
+        // SAFETY: immediately filled by enif_inspect_binary
         var bin: e.ErlNifBinary = undefined;
         if (e.enif_inspect_binary(env, key, &bin) != 0) {
             if (bin.size > 0) {
-                @memcpy(key_str[0..bin.size], bin.data[0..bin.size]);
+                atom = qjs.JS_NewAtomLen(ctx, bin.data, bin.size);
             }
-            key_len = bin.size;
         } else {
-            const alen = e.enif_get_atom(env, key, &key_str, key_str.len, e.ERL_NIF_LATIN1);
+            var atom_buf: [256]u8 = undefined;
+            const alen = e.enif_get_atom(env, key, &atom_buf, atom_buf.len, e.ERL_NIF_LATIN1);
             if (alen > 0) {
-                key_len = @intCast(alen - 1);
+                const name_len: usize = @intCast(alen - 1);
+                atom = qjs.JS_NewAtomLen(ctx, &atom_buf, name_len);
             }
         }
 
-        if (key_len > 0 and key_len < key_str.len) {
-            key_str[key_len] = 0;
+        if (atom != qjs.JS_ATOM_NULL) {
             const js_val = convert_recursive(ctx, env, val, depth + 1);
-            _ = qjs.JS_SetPropertyStr(ctx, obj, @ptrCast(key_str[0..key_len :0].ptr), js_val);
+            _ = qjs.JS_SetProperty(ctx, obj, atom, js_val);
+            qjs.JS_FreeAtom(ctx, atom);
         }
 
         _ = e.enif_map_iterator_next(env, &iter);
