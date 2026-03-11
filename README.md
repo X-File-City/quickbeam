@@ -7,6 +7,16 @@ JS runtimes are GenServers. They live in supervision trees, send and
 receive messages, and call into Erlang/OTP libraries — all without
 leaving the BEAM.
 
+## Installation
+
+```elixir
+def deps do
+  [{:quickbeam, "~> 0.1.0"}]
+end
+```
+
+Requires Zig 0.15+ (installed automatically by Zigler, or use system Zig).
+
 ## Quick start
 
 ```elixir
@@ -240,16 +250,6 @@ vs QuickJSEx 0.3.1 (Rust/Rustler, JSON serialization):
 | Startup | ~600 μs (parity) |
 
 See [`bench/`](bench/README.md) for details.
-
-## Installation
-
-```elixir
-def deps do
-  [{:quickbeam, "~> 0.1.0"}]
-end
-```
-
-Requires Zig 0.15+ (installed automatically by Zigler, or use system Zig).
 
 ## Examples
 
