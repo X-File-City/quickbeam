@@ -120,7 +120,6 @@ defmodule QuickBEAM.Runtime do
     "__broadcast_post" => {:with_caller, &QuickBEAM.BroadcastChannel.post/2},
     "__broadcast_leave" => {:with_caller, &QuickBEAM.BroadcastChannel.leave/2},
     "__worker_spawn" => {:with_caller, &QuickBEAM.WorkerAPI.spawn_worker/2},
-    "__worker_post" => &QuickBEAM.WorkerAPI.post_to_worker/1,
     "__worker_terminate" => &QuickBEAM.WorkerAPI.terminate_worker/1,
     "__locks_request" => {:with_caller, &QuickBEAM.LocksAPI.request_lock/2},
     "__locks_release" => {:with_caller, &QuickBEAM.LocksAPI.release_lock/2},
@@ -443,11 +442,6 @@ defmodule QuickBEAM.Runtime do
     ref = Process.monitor(child_pid)
     workers = Map.put(state.workers, ref, child_pid)
     {:noreply, %{state | workers: workers}}
-  end
-
-  def handle_info({:worker_message_from_child, child_pid, data}, state) do
-    QuickBEAM.Native.send_message(state.resource, ["__worker_msg", child_pid, data])
-    {:noreply, state}
   end
 
   def handle_info({:worker_error_from_child, child_pid, error}, state) do

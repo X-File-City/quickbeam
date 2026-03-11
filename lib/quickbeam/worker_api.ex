@@ -3,8 +3,9 @@ defmodule QuickBEAM.WorkerAPI do
 
   @worker_bootstrap """
   globalThis.self = globalThis;
+  const __parentPid = beam.callSync("__worker_parent");
   self.postMessage = function(data) {
-    beam.call("__worker_post_to_parent", data);
+    beam.send(__parentPid, ["__worker_msg", beam.self(), data]);
   };
   Object.defineProperty(self, "onmessage", {
     set(handler) { Process.onMessage(msg => {
@@ -20,11 +21,7 @@ defmodule QuickBEAM.WorkerAPI do
     {:ok, child} =
       QuickBEAM.start(
         handlers: %{
-          "__worker_post_to_parent" =>
-            {:with_caller, fn [message], child_pid ->
-              send(parent_pid, {:worker_message_from_child, child_pid, message})
-              nil
-            end}
+          "__worker_parent" => fn [] -> parent_pid end
         }
       )
 
@@ -40,11 +37,6 @@ defmodule QuickBEAM.WorkerAPI do
     end)
 
     child
-  end
-
-  def post_to_worker([worker_pid, message]) do
-    QuickBEAM.send_message(worker_pid, ["__worker_msg", message])
-    nil
   end
 
   def terminate_worker([worker_pid]) do

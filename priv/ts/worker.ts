@@ -37,7 +37,7 @@ class Worker extends EventTarget {
 
   postMessage(data: unknown): void {
     if (this.#terminated) throw new DOMException('Worker has been terminated', 'InvalidStateError')
-    void beam.call('__worker_post', this.#pid, data)
+    beam.send(this.#pid, ['__worker_msg', data])
   }
 
   terminate(): void {
