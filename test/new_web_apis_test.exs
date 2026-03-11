@@ -404,6 +404,8 @@ defmodule QuickBEAM.NewWebAPIsTest do
 
   describe "BroadcastChannel" do
     test "messages between two runtimes", _context do
+      unless Process.whereis(QuickBEAM.BroadcastChannel), do: :pg.start_link(QuickBEAM.BroadcastChannel)
+
       {:ok, rt1} = QuickBEAM.start()
       {:ok, rt2} = QuickBEAM.start()
 

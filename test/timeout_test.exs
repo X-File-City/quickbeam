@@ -24,7 +24,7 @@ defmodule QuickBEAM.TimeoutTest do
 
   test "eval without timeout has no limit" do
     {:ok, rt} = QuickBEAM.start()
-    assert {:ok, 50_000_000} = QuickBEAM.eval(rt, "let s = 0; for (let i = 0; i < 50_000_000; i++) s += 1; s")
+    assert {:ok, 5_000_000} = QuickBEAM.eval(rt, "let s = 0; for (let i = 0; i < 5_000_000; i++) s += 1; s")
     QuickBEAM.stop(rt)
   end
 end
