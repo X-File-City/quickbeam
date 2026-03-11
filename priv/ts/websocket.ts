@@ -1,15 +1,11 @@
-import {
-  QBEventTarget,
-  QBEvent,
-  QBMessageEvent,
-  QBCloseEvent,
-  QBDOMException,
-} from "./event-target";
-import { QBBlob, SYM_BYTES } from "./blob";
+import { DOMException } from "./dom-exception";
+import { EventTarget } from "./event-target";
+import { Event, MessageEvent, CloseEvent } from "./event";
+import { Blob, SYM_BYTES } from "./blob";
 
 const SYM_HANDLE_EVENT = Symbol("handleEvent");
 
-class QBWebSocket extends QBEventTarget {
+class WebSocket extends EventTarget {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
   static readonly CLOSING = 2;
@@ -22,54 +18,39 @@ class QBWebSocket extends QBEventTarget {
 
   readonly url: string;
   readonly extensions = "";
-  #readyState = QBWebSocket.CONNECTING;
+  #readyState = WebSocket.CONNECTING;
   #protocol = "";
   #binaryType: BinaryType = "blob";
   #bufferedAmount = 0;
   #id: string;
 
-  onopen: ((ev: QBEvent) => void) | null = null;
-  onmessage: ((ev: QBMessageEvent) => void) | null = null;
-  onclose: ((ev: QBCloseEvent) => void) | null = null;
-  onerror: ((ev: QBEvent) => void) | null = null;
+  onopen: ((ev: Event) => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onclose: ((ev: CloseEvent) => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
 
   constructor(url: string, protocols?: string | string[]) {
     super();
     this.url = url;
-
     const protoArray =
       protocols === undefined ? [] : (typeof protocols === "string" ? [protocols] : protocols);
     this.#id = beam.callSync("__ws_connect", url, protoArray) as string;
   }
 
-  get readyState(): number {
-    return this.#readyState;
-  }
+  get readyState(): number { return this.#readyState; }
+  get protocol(): string { return this.#protocol; }
+  get binaryType(): BinaryType { return this.#binaryType; }
+  set binaryType(value: BinaryType) { this.#binaryType = value; }
+  get bufferedAmount(): number { return this.#bufferedAmount; }
 
-  get protocol(): string {
-    return this.#protocol;
-  }
-
-  get binaryType(): BinaryType {
-    return this.#binaryType;
-  }
-
-  set binaryType(value: BinaryType) {
-    this.#binaryType = value;
-  }
-
-  get bufferedAmount(): number {
-    return this.#bufferedAmount;
-  }
-
-  send(data: string | ArrayBuffer | Uint8Array | QBBlob): void {
-    if (this.#readyState === QBWebSocket.CONNECTING) {
-      throw new QBDOMException(
+  send(data: string | ArrayBuffer | Uint8Array | Blob): void {
+    if (this.#readyState === WebSocket.CONNECTING) {
+      throw new DOMException(
         "WebSocket is not open: readyState 0 (CONNECTING)",
         "InvalidStateError",
       );
     }
-    if (this.#readyState !== QBWebSocket.OPEN) return;
+    if (this.#readyState !== WebSocket.OPEN) return;
 
     let payload: string | Uint8Array;
     if (typeof data === "string") {
@@ -78,7 +59,7 @@ class QBWebSocket extends QBEventTarget {
       payload = data;
     } else if (data instanceof ArrayBuffer) {
       payload = new Uint8Array(data);
-    } else if (data instanceof QBBlob) {
+    } else if (data instanceof Blob) {
       payload = data[SYM_BYTES]();
     } else {
       payload = JSON.stringify(data);
@@ -88,16 +69,16 @@ class QBWebSocket extends QBEventTarget {
   }
 
   close(code?: number, reason?: string): void {
-    if (this.#readyState === QBWebSocket.CLOSING || this.#readyState === QBWebSocket.CLOSED) return;
+    if (this.#readyState === WebSocket.CLOSING || this.#readyState === WebSocket.CLOSED) return;
 
     if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
-      throw new QBDOMException(
+      throw new DOMException(
         `The code must be either 1000, or between 3000 and 4999. ${code} is neither.`,
         "InvalidAccessError",
       );
     }
 
-    this.#readyState = QBWebSocket.CLOSING;
+    this.#readyState = WebSocket.CLOSING;
     void beam.call("__ws_close", this.#id, code ?? 1000, reason ?? "");
   }
 
@@ -113,10 +94,10 @@ class QBWebSocket extends QBEventTarget {
   ): void {
     switch (type) {
       case "open":
-        this.#readyState = QBWebSocket.OPEN;
+        this.#readyState = WebSocket.OPEN;
         this.#protocol = detail?.protocol ?? "";
         {
-          const ev = new QBEvent("open");
+          const ev = new Event("open");
           this.onopen?.(ev);
           this.dispatchEvent(ev);
         }
@@ -127,15 +108,15 @@ class QBWebSocket extends QBEventTarget {
         if (this.#binaryType === "arraybuffer" && messageData instanceof Uint8Array) {
           messageData = messageData.buffer;
         }
-        const ev = new QBMessageEvent("message", { data: messageData });
+        const ev = new MessageEvent("message", { data: messageData });
         this.onmessage?.(ev);
         this.dispatchEvent(ev);
         break;
       }
 
       case "close": {
-        this.#readyState = QBWebSocket.CLOSED;
-        const ev = new QBCloseEvent("close", {
+        this.#readyState = WebSocket.CLOSED;
+        const ev = new CloseEvent("close", {
           code: detail?.code ?? 1006,
           reason: detail?.reason ?? "",
           wasClean: detail?.wasClean ?? false,
@@ -146,7 +127,7 @@ class QBWebSocket extends QBEventTarget {
       }
 
       case "error": {
-        const ev = new QBEvent("error");
+        const ev = new Event("error");
         this.onerror?.(ev);
         this.dispatchEvent(ev);
         break;
@@ -155,4 +136,4 @@ class QBWebSocket extends QBEventTarget {
   }
 }
 
-(globalThis as Record<string, unknown>).WebSocket = QBWebSocket;
+export { WebSocket };

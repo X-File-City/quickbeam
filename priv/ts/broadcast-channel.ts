@@ -1,61 +1,54 @@
-import { QBEventTarget, QBMessageEvent, QBDOMException } from "./event-target";
+import { DOMException } from "./dom-exception";
+import { EventTarget } from "./event-target";
+import { MessageEvent } from "./event";
 
 const SYM_RECEIVE = Symbol("receive");
 
-const channelRegistry = new Map<string, Set<QBBroadcastChannel>>();
+const channelRegistry = new Map<string, Set<BroadcastChannel>>();
 
-function registerChannel(ch: QBBroadcastChannel): void {
-  let set = channelRegistry.get(ch.name);
-  if (!set) {
-    set = new Set();
-    channelRegistry.set(ch.name, set);
-  }
-  set.add(ch);
-}
-
-function unregisterChannel(ch: QBBroadcastChannel): void {
-  const set = channelRegistry.get(ch.name);
-  if (set) {
-    set.delete(ch);
-    if (set.size === 0) channelRegistry.delete(ch.name);
-  }
-}
-
-class QBBroadcastChannel extends QBEventTarget {
+class BroadcastChannel extends EventTarget {
   readonly name: string;
   #closed = false;
 
-  onmessage: ((ev: QBMessageEvent) => void) | null = null;
-  onmessageerror: ((ev: QBMessageEvent) => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onmessageerror: ((ev: MessageEvent) => void) | null = null;
 
   constructor(name: string) {
     super();
     this.name = name;
-    registerChannel(this);
+    let set = channelRegistry.get(name);
+    if (!set) {
+      set = new Set();
+      channelRegistry.set(name, set);
+    }
+    set.add(this);
     beam.callSync("__broadcast_join", name);
   }
 
   postMessage(message: unknown): void {
-    if (this.#closed) throw new QBDOMException("BroadcastChannel is closed", "InvalidStateError");
+    if (this.#closed) throw new DOMException("BroadcastChannel is closed", "InvalidStateError");
     void beam.call("__broadcast_post", this.name, structuredClone(message));
   }
 
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    unregisterChannel(this);
+    const set = channelRegistry.get(this.name);
+    if (set) {
+      set.delete(this);
+      if (set.size === 0) channelRegistry.delete(this.name);
+    }
     beam.callSync("__broadcast_leave", this.name);
   }
 
   [SYM_RECEIVE](data: unknown): void {
     if (this.#closed) return;
-    const event = new QBMessageEvent("message", { data });
+    const event = new MessageEvent("message", { data });
     this.onmessage?.(event);
     this.dispatchEvent(event);
   }
 }
 
-(globalThis as Record<string, unknown>).BroadcastChannel = QBBroadcastChannel;
 (globalThis as Record<string, unknown>).__qb_broadcast_dispatch = (
   channel: string,
   data: unknown,
@@ -64,3 +57,5 @@ class QBBroadcastChannel extends QBEventTarget {
   if (!set) return;
   for (const ch of set) ch[SYM_RECEIVE](data);
 };
+
+export { BroadcastChannel };

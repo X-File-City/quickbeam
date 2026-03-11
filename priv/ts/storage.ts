@@ -1,4 +1,4 @@
-class QBStorage {
+class WebStorage {
   getItem(key: string): string | null {
     return beam.callSync("__storage_get", String(key)) as string | null;
   }
@@ -24,4 +24,4 @@ class QBStorage {
   }
 }
 
-(globalThis as Record<string, unknown>).localStorage = new QBStorage();
+(globalThis as Record<string, unknown>).localStorage = new WebStorage();

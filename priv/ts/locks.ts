@@ -1,3 +1,5 @@
+import { DOMException } from "./dom-exception";
+
 interface LockInfo {
   name: string;
   mode: "exclusive" | "shared";
@@ -21,7 +23,7 @@ interface LockManagerSnapshot {
 
 type LockGrantedCallback<T> = (lock: Lock | null) => T | Promise<T>;
 
-class QBLockManager {
+class LockManager {
   async request<T>(
     name: string,
     callbackOrOptions: LockOptions | LockGrantedCallback<T>,
@@ -44,12 +46,7 @@ class QBLockManager {
       throw new DOMException("The operation was aborted.", "AbortError");
     }
 
-    const result = await beam.call(
-      "__locks_request",
-      name,
-      mode,
-      ifAvailable,
-    );
+    const result = await beam.call("__locks_request", name, mode, ifAvailable);
 
     if (result === "not_available") {
       return await callback(null);
@@ -73,6 +70,7 @@ class QBLockManager {
   }
 }
 
-const lockManager = new QBLockManager();
-(globalThis as Record<string, unknown>).navigator = (globalThis as Record<string, unknown>).navigator ?? {};
-(navigator as Record<string, unknown>).locks = lockManager;
+const lockManager = new LockManager();
+const g = globalThis as Record<string, unknown>;
+g.navigator = g.navigator ?? {};
+(g.navigator as Record<string, unknown>).locks = lockManager;

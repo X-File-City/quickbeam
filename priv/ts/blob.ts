@@ -1,21 +1,21 @@
-import { QBReadableStream } from "./streams";
-import type { QBReadableStreamController } from "./streams";
+import { ReadableStream } from "./streams";
+import type { ReadableStreamController } from "./streams";
 
-export type QBBlobPart = Uint8Array | ArrayBuffer | DataView | QBBlob | string;
+export type BlobPart = Uint8Array | ArrayBuffer | DataView | Blob | string;
 
-export interface QBBlobPropertyBag {
+export interface BlobPropertyBag {
   type?: string;
   endings?: "transparent" | "native";
 }
 
 export const SYM_BYTES = Symbol("bytes");
 
-function normalizeQBBlobPart(part: QBBlobPart): Uint8Array {
+function normalizePart(part: BlobPart): Uint8Array {
   if (part instanceof Uint8Array) return part;
   if (part instanceof ArrayBuffer) return new Uint8Array(part);
   if (part instanceof DataView)
     return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
-  if (part instanceof QBBlob) return part[SYM_BYTES]();
+  if (part instanceof Blob) return part[SYM_BYTES]();
   if (typeof part === "string") return new TextEncoder().encode(part);
   return new Uint8Array(0);
 }
@@ -41,14 +41,17 @@ function clampIndex(idx: number, size: number): number {
   return Math.min(idx, size);
 }
 
-export class QBBlob {
+function normalizeType(raw: string): string {
+  return /^[\x20-\x7E]*$/.test(raw) ? raw.toLowerCase() : "";
+}
+
+export class Blob {
   #parts: Uint8Array[];
   #type: string;
 
-  constructor(parts?: QBBlobPart[], options?: QBBlobPropertyBag) {
-    const raw = options?.type ?? "";
-    this.#type = /^[\x20-\x7E]*$/.test(raw) ? raw.toLowerCase() : "";
-    this.#parts = (parts ?? []).map(normalizeQBBlobPart);
+  constructor(parts?: BlobPart[], options?: BlobPropertyBag) {
+    this.#type = normalizeType(options?.type ?? "");
+    this.#parts = (parts ?? []).map(normalizePart);
   }
 
   get size(): number {
@@ -73,20 +76,19 @@ export class QBBlob {
     return this[SYM_BYTES]();
   }
 
-  slice(start?: number, end?: number, contentType?: string): QBBlob {
+  slice(start?: number, end?: number, contentType?: string): Blob {
     const bytes = this[SYM_BYTES]();
     const s = clampIndex(start ?? 0, bytes.length);
     const e = clampIndex(end ?? bytes.length, bytes.length);
-    const raw = contentType ?? "";
-    return new QBBlob([bytes.slice(s, Math.max(s, e))], {
-      type: /^[\x20-\x7E]*$/.test(raw) ? raw : "",
+    return new Blob([bytes.slice(s, Math.max(s, e))], {
+      type: normalizeType(contentType ?? ""),
     });
   }
 
-  stream(): QBReadableStream<Uint8Array> {
+  stream(): ReadableStream<Uint8Array> {
     const bytes = this[SYM_BYTES]();
-    return new QBReadableStream({
-      start(controller: QBReadableStreamController<Uint8Array>) {
+    return new ReadableStream({
+      start(controller: ReadableStreamController<Uint8Array>) {
         if (bytes.length > 0) controller.enqueue(bytes);
         controller.close();
       },
@@ -98,20 +100,17 @@ export class QBBlob {
   }
 }
 
-export class QBFile extends QBBlob {
+export class File extends Blob {
   readonly name: string;
   readonly lastModified: number;
 
   constructor(
-    parts: QBBlobPart[],
+    parts: BlobPart[],
     name: string,
-    options?: QBBlobPropertyBag & { lastModified?: number },
+    options?: BlobPropertyBag & { lastModified?: number },
   ) {
     super(parts, options);
     this.name = name;
     this.lastModified = options?.lastModified ?? Date.now();
   }
 }
-
-(globalThis as Record<string, unknown>).Blob = QBBlob;
-(globalThis as Record<string, unknown>).File = QBFile;

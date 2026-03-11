@@ -1,10 +1,10 @@
-export type QBHeadersInit = [string, string][] | Record<string, string> | QBHeaders;
+export type HeadersInit = [string, string][] | Record<string, string> | Headers;
 
-export class QBHeaders {
+export class Headers {
   #map = new Map<string, string[]>();
 
-  constructor(init?: QBHeadersInit) {
-    if (init instanceof QBHeaders) {
+  constructor(init?: HeadersInit) {
+    if (init instanceof Headers) {
       for (const [name, value] of init) this.append(name, value);
     } else if (Array.isArray(init)) {
       for (const pair of init) this.append(pair[0], pair[1]);
@@ -45,7 +45,7 @@ export class QBHeaders {
   }
 
   forEach(
-    callback: (value: string, name: string, parent: QBHeaders) => void,
+    callback: (value: string, name: string, parent: Headers) => void,
     thisArg?: unknown,
   ): void {
     for (const [name, value] of this) {
@@ -74,5 +74,3 @@ export class QBHeaders {
     return this.entries();
   }
 }
-
-(globalThis as Record<string, unknown>).Headers = QBHeaders;

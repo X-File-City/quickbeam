@@ -1,12 +1,16 @@
-import { QBEventTarget, QBEvent, QBDOMException } from "./event-target";
+import { DOMException } from "./dom-exception";
+import { EventTarget } from "./event-target";
+import { Event } from "./event";
 
 const SYM_ABORT = Symbol("abort");
 
-export class QBAbortSignal extends QBEventTarget {
+export { SYM_ABORT };
+
+export class AbortSignal extends EventTarget {
   #aborted = false;
   #reason: unknown = undefined;
 
-  onabort: ((ev: QBEvent) => void) | null = null;
+  onabort: ((ev: Event) => void) | null = null;
 
   get aborted(): boolean {
     return this.#aborted;
@@ -23,29 +27,29 @@ export class QBAbortSignal extends QBEventTarget {
   [SYM_ABORT](reason?: unknown): void {
     if (this.#aborted) return;
     this.#aborted = true;
-    this.#reason = reason ?? new QBDOMException("The operation was aborted.", "AbortError");
-    const event = new QBEvent("abort");
+    this.#reason = reason ?? new DOMException("The operation was aborted.", "AbortError");
+    const event = new Event("abort");
     this.onabort?.(event);
     this.dispatchEvent(event);
   }
 
-  static timeout(ms: number): QBAbortSignal {
-    const controller = new QBAbortController();
+  static timeout(ms: number): AbortSignal {
+    const controller = new AbortController();
     setTimeout(
-      () => controller.abort(new QBDOMException("The operation timed out.", "TimeoutError")),
+      () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
       ms,
     );
     return controller.signal;
   }
 
-  static abort(reason?: unknown): QBAbortSignal {
-    const s = new QBAbortSignal();
+  static abort(reason?: unknown): AbortSignal {
+    const s = new AbortSignal();
     s[SYM_ABORT](reason);
     return s;
   }
 
-  static any(signals: QBAbortSignal[]): QBAbortSignal {
-    const controller = new QBAbortController();
+  static any(signals: AbortSignal[]): AbortSignal {
+    const controller = new AbortController();
     for (const s of signals) {
       if (s.aborted) {
         controller.abort(s.reason);
@@ -57,10 +61,10 @@ export class QBAbortSignal extends QBEventTarget {
   }
 }
 
-export class QBAbortController {
-  #signal = new QBAbortSignal();
+export class AbortController {
+  #signal = new AbortSignal();
 
-  get signal(): QBAbortSignal {
+  get signal(): AbortSignal {
     return this.#signal;
   }
 
@@ -68,6 +72,3 @@ export class QBAbortController {
     this.#signal[SYM_ABORT](reason);
   }
 }
-
-(globalThis as Record<string, unknown>).AbortSignal = QBAbortSignal;
-(globalThis as Record<string, unknown>).AbortController = QBAbortController;

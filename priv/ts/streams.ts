@@ -1,17 +1,19 @@
-export interface QBUnderlyingSource<R = unknown> {
-  start?: (controller: QBReadableStreamController<R>) => void | Promise<void>;
-  pull?: (controller: QBReadableStreamController<R>) => void | Promise<void>;
+import { AbortController, AbortSignal } from "./abort";
+
+export interface UnderlyingSource<R = unknown> {
+  start?: (controller: ReadableStreamController<R>) => void | Promise<void>;
+  pull?: (controller: ReadableStreamController<R>) => void | Promise<void>;
   cancel?: (reason?: unknown) => void | Promise<void>;
 }
 
-export interface QBReadableStreamController<R = unknown> {
+export interface ReadableStreamController<R = unknown> {
   readonly desiredSize: number | null;
   enqueue(chunk: R): void;
   close(): void;
   error(e?: unknown): void;
 }
 
-export interface QBReadableStreamReadResult<R> {
+export interface ReadableStreamReadResult<R> {
   value: R;
   done: boolean;
 }
@@ -22,39 +24,36 @@ const SYM_READ = Symbol("read");
 const SYM_RELEASE = Symbol("releaseLock");
 const SYM_CANCEL = Symbol("cancel");
 
-export class QBReadableStream<R = unknown> {
+export class ReadableStream<R = unknown> {
   #queue: R[] = [];
   #state: ReadableStreamState = "readable";
   #storedError: unknown = undefined;
-  #source: QBUnderlyingSource<R> | undefined;
-  #controller!: QBReadableStreamController<R>;
+  #source: UnderlyingSource<R> | undefined;
+  #controller!: ReadableStreamController<R>;
   #pulling = false;
   #waitingReaders: Array<{
-    resolve: (result: QBReadableStreamReadResult<R>) => void;
+    resolve: (result: ReadableStreamReadResult<R>) => void;
     reject: (reason: unknown) => void;
   }> = [];
   #locked = false;
 
-  constructor(source?: QBUnderlyingSource<R>) {
+  constructor(source?: UnderlyingSource<R>) {
     this.#source = source;
 
-    const controller: QBReadableStreamController<R> = {
+    const controller: ReadableStreamController<R> = {
       desiredSize: 1,
       enqueue: (chunk: R) => {
         if (this.#state !== "readable") return;
-
         if (this.#waitingReaders.length > 0) {
           const reader = this.#waitingReaders.shift();
           if (reader) reader.resolve({ value: chunk, done: false });
           return;
         }
-
         this.#queue.push(chunk);
       },
       close: () => {
         if (this.#state !== "readable") return;
         this.#state = "closed";
-
         for (const reader of this.#waitingReaders) {
           reader.resolve({ value: undefined as R, done: true });
         }
@@ -64,7 +63,6 @@ export class QBReadableStream<R = unknown> {
         if (this.#state !== "readable") return;
         this.#state = "errored";
         this.#storedError = e;
-
         for (const reader of this.#waitingReaders) {
           reader.reject(e);
         }
@@ -89,10 +87,10 @@ export class QBReadableStream<R = unknown> {
     return this.#locked;
   }
 
-  getReader(): QBReadableStreamDefaultReader<R> {
+  getReader(): ReadableStreamDefaultReader<R> {
     if (this.#locked) throw new TypeError("ReadableStream is already locked");
     this.#locked = true;
-    return new QBReadableStreamDefaultReader(this);
+    return new ReadableStreamDefaultReader(this);
   }
 
   async cancel(reason?: unknown): Promise<void> {
@@ -102,23 +100,89 @@ export class QBReadableStream<R = unknown> {
     this.#queue = [];
   }
 
-  [SYM_READ](): Promise<QBReadableStreamReadResult<R>> {
-    if (this.#state === "errored") {
-      return Promise.reject(this.#storedError);
-    }
+  pipeThrough<T>(transform: {
+    writable: WritableStream;
+    readable: ReadableStream<T>;
+  }): ReadableStream<T> {
+    void this.pipeTo(transform.writable);
+    return transform.readable;
+  }
 
+  async pipeTo(dest: WritableStream): Promise<void> {
+    const reader = this.getReader();
+    const writer = dest.getWriter();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        await writer.write(value);
+      }
+      await writer.close();
+    } catch (e) {
+      await writer.abort(e);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  tee(): [ReadableStream<R>, ReadableStream<R>] {
+    const reader = this.getReader();
+    let cancelled1 = false;
+    let cancelled2 = false;
+    let ctrl2!: ReadableStreamController<R>;
+
+    const stream1 = new ReadableStream<R>({
+      pull(controller) {
+        return reader.read().then(({ value, done }) => {
+          if (done) {
+            if (!cancelled1) controller.close();
+            if (!cancelled2) ctrl2.close();
+            return;
+          }
+          if (!cancelled1) controller.enqueue(value);
+          if (!cancelled2) ctrl2.enqueue(value);
+        });
+      },
+      cancel() {
+        cancelled1 = true;
+      },
+    });
+
+    const stream2 = new ReadableStream<R>({
+      start(controller) {
+        ctrl2 = controller;
+      },
+      cancel() {
+        cancelled2 = true;
+      },
+    });
+
+    return [stream1, stream2];
+  }
+
+  static from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T> {
+    return new ReadableStream<T>({
+      async start(controller) {
+        for await (const chunk of iterable as AsyncIterable<T>) {
+          controller.enqueue(chunk);
+        }
+        controller.close();
+      },
+    });
+  }
+
+  [SYM_READ](): Promise<ReadableStreamReadResult<R>> {
+    if (this.#state === "errored") return Promise.reject(this.#storedError);
     if (this.#queue.length > 0) {
       const value = this.#queue.shift() as R;
       this.#callPull();
       return Promise.resolve({ value, done: false });
     }
-
     if (this.#state === "closed") {
       return Promise.resolve({ value: undefined as R, done: true });
     }
-
     this.#callPull();
-    return new Promise<QBReadableStreamReadResult<R>>((resolve, reject) => {
+    return new Promise<ReadableStreamReadResult<R>>((resolve, reject) => {
       this.#waitingReaders.push({ resolve, reject });
     });
   }
@@ -139,13 +203,8 @@ export class QBReadableStream<R = unknown> {
       const result = this.#source.pull(this.#controller);
       if (result instanceof Promise) {
         void result
-          .then(() => {
-            this.#pulling = false;
-          })
-          .catch((e: unknown) => {
-            this.#pulling = false;
-            this.#controller.error(e);
-          });
+          .then(() => { this.#pulling = false; })
+          .catch((e: unknown) => { this.#pulling = false; this.#controller.error(e); });
       } else {
         this.#pulling = false;
       }
@@ -167,72 +226,21 @@ export class QBReadableStream<R = unknown> {
       reader.releaseLock();
     }
   }
-
-  tee(): [QBReadableStream<R>, QBReadableStream<R>] {
-    const reader = this.getReader();
-    let cancelled1 = false;
-    let cancelled2 = false;
-
-    let ctrl2!: QBReadableStreamController<R>;
-
-    const stream1 = new QBReadableStream<R>({
-      pull(controller) {
-        return reader.read().then(({ value, done }) => {
-          if (done) {
-            if (!cancelled1) controller.close();
-            if (!cancelled2) ctrl2.close();
-            return;
-          }
-          if (!cancelled1) controller.enqueue(value);
-          if (!cancelled2) ctrl2.enqueue(value);
-        });
-      },
-      cancel() {
-        cancelled1 = true;
-      },
-    });
-
-    const stream2 = new QBReadableStream<R>({
-      start(controller) {
-        ctrl2 = controller;
-      },
-      cancel() {
-        cancelled2 = true;
-      },
-    });
-
-    return [stream1, stream2];
-  }
-
-  static from<T>(iterable: Iterable<T> | AsyncIterable<T>): QBReadableStream<T> {
-    return new QBReadableStream<T>({
-      async start(controller) {
-        for await (const chunk of iterable as AsyncIterable<T>) {
-          controller.enqueue(chunk);
-        }
-        controller.close();
-      },
-    });
-  }
 }
 
-export class QBReadableStreamDefaultReader<R = unknown> {
-  #stream: QBReadableStream<R>;
+export class ReadableStreamDefaultReader<R = unknown> {
+  #stream: ReadableStream<R>;
   #closed: Promise<void>;
   #closedResolve!: () => void;
 
-  constructor(stream: QBReadableStream<R>) {
+  constructor(stream: ReadableStream<R>) {
     this.#stream = stream;
-    this.#closed = new Promise<void>((resolve) => {
-      this.#closedResolve = resolve;
-    });
+    this.#closed = new Promise<void>((resolve) => { this.#closedResolve = resolve; });
   }
 
-  get closed(): Promise<void> {
-    return this.#closed;
-  }
+  get closed(): Promise<void> { return this.#closed; }
 
-  read(): Promise<QBReadableStreamReadResult<R>> {
+  read(): Promise<ReadableStreamReadResult<R>> {
     return this.#stream[SYM_READ]();
   }
 
@@ -249,45 +257,43 @@ export class QBReadableStreamDefaultReader<R = unknown> {
 
 // ──────────────────── WritableStream ────────────────────
 
-interface QBUnderlyingSink<W = unknown> {
-  start?: (controller: QBWritableStreamDefaultController) => void | Promise<void>;
-  write?: (chunk: W, controller: QBWritableStreamDefaultController) => void | Promise<void>;
+interface UnderlyingSink<W = unknown> {
+  start?: (controller: WritableStreamDefaultController) => void | Promise<void>;
+  write?: (chunk: W, controller: WritableStreamDefaultController) => void | Promise<void>;
   close?: () => void | Promise<void>;
   abort?: (reason?: unknown) => void | Promise<void>;
 }
 
-interface QBWritableStreamDefaultController {
+interface WritableStreamDefaultController {
   readonly signal: AbortSignal;
   error(e?: unknown): void;
 }
 
 type WritableStreamState = "writable" | "erroring" | "closed" | "errored";
 
-export class QBWritableStream<W = unknown> {
-  #sink: QBUnderlyingSink<W> | undefined;
+export class WritableStream<W = unknown> {
+  #sink: UnderlyingSink<W> | undefined;
   #state: WritableStreamState = "writable";
   #storedError: unknown = undefined;
   #locked = false;
-  #controller!: QBWritableStreamDefaultController;
+  #controller!: WritableStreamDefaultController;
   #closeResolve?: () => void;
   #closeReject?: (reason: unknown) => void;
   #abortController = new AbortController();
 
-  constructor(sink?: QBUnderlyingSink<W>) {
+  constructor(sink?: UnderlyingSink<W>) {
     this.#sink = sink;
 
-    const controller: QBWritableStreamDefaultController = {
-      get signal() {
-        return (this as { _ac: AbortController })._ac.signal;
-      },
+    const ac = this.#abortController;
+    const controller: WritableStreamDefaultController = {
+      get signal() { return ac.signal; },
       error: (e?: unknown) => {
         if (this.#state !== "writable") return;
         this.#state = "errored";
         this.#storedError = e;
         this.#closeReject?.(e);
       },
-    } as QBWritableStreamDefaultController;
-    (controller as { _ac: AbortController })._ac = this.#abortController;
+    };
     this.#controller = controller;
 
     try {
@@ -300,9 +306,7 @@ export class QBWritableStream<W = unknown> {
     }
   }
 
-  get locked(): boolean {
-    return this.#locked;
-  }
+  get locked(): boolean { return this.#locked; }
 
   async abort(reason?: unknown): Promise<void> {
     if (this.#locked) throw new TypeError("Cannot abort a locked stream");
@@ -319,17 +323,18 @@ export class QBWritableStream<W = unknown> {
     this.#state = "closed";
   }
 
-  getWriter(): QBWritableStreamDefaultWriter<W> {
+  getWriter(): WritableStreamDefaultWriter<W> {
     if (this.#locked) throw new TypeError("WritableStream is already locked");
     this.#locked = true;
-    return new QBWritableStreamDefaultWriter(this);
+    return new WritableStreamDefaultWriter(this);
   }
 
-  async _write(chunk: W): Promise<void> {
+  _write(chunk: W): Promise<void> {
     if (this.#state !== "writable") {
-      throw this.#storedError ?? new TypeError("Stream is not writable");
+      return Promise.reject(this.#storedError ?? new TypeError("Stream is not writable"));
     }
-    await this.#sink?.write?.(chunk, this.#controller);
+    const r = this.#sink?.write?.(chunk, this.#controller);
+    return r instanceof Promise ? r : Promise.resolve();
   }
 
   async _close(): Promise<void> {
@@ -347,9 +352,7 @@ export class QBWritableStream<W = unknown> {
     this.#closeReject?.(reason);
   }
 
-  _releaseLock(): void {
-    this.#locked = false;
-  }
+  _releaseLock(): void { this.#locked = false; }
 
   _closed(): Promise<void> {
     if (this.#state === "closed") return Promise.resolve();
@@ -369,30 +372,20 @@ export class QBWritableStream<W = unknown> {
   }
 }
 
-export class QBWritableStreamDefaultWriter<W = unknown> {
-  #stream: QBWritableStream<W>;
+export class WritableStreamDefaultWriter<W = unknown> {
+  #stream: WritableStream<W>;
   #closedPromise: Promise<void>;
 
-  constructor(stream: QBWritableStream<W>) {
+  constructor(stream: WritableStream<W>) {
     this.#stream = stream;
     this.#closedPromise = stream._closed();
   }
 
-  get closed(): Promise<void> {
-    return this.#closedPromise;
-  }
+  get closed(): Promise<void> { return this.#closedPromise; }
+  get desiredSize(): number | null { return this.#stream._desiredSize(); }
+  get ready(): Promise<void> { return this.#stream._ready(); }
 
-  get desiredSize(): number | null {
-    return this.#stream._desiredSize();
-  }
-
-  get ready(): Promise<void> {
-    return this.#stream._ready();
-  }
-
-  async write(chunk: W): Promise<void> {
-    await this.#stream._write(chunk);
-  }
+  async write(chunk: W): Promise<void> { await this.#stream._write(chunk); }
 
   async close(): Promise<void> {
     await this.#stream._close();
@@ -404,97 +397,75 @@ export class QBWritableStreamDefaultWriter<W = unknown> {
     this.releaseLock();
   }
 
-  releaseLock(): void {
-    this.#stream._releaseLock();
-  }
+  releaseLock(): void { this.#stream._releaseLock(); }
 }
 
 // ──────────────────── TransformStream ────────────────────
 
-interface QBTransformer<I = unknown, O = unknown> {
-  start?: (controller: QBTransformStreamDefaultController<O>) => void | Promise<void>;
-  transform?: (chunk: I, controller: QBTransformStreamDefaultController<O>) => void | Promise<void>;
-  flush?: (controller: QBTransformStreamDefaultController<O>) => void | Promise<void>;
+interface Transformer<I = unknown, O = unknown> {
+  start?: (controller: TransformStreamDefaultController<O>) => void | Promise<void>;
+  transform?: (chunk: I, controller: TransformStreamDefaultController<O>) => void | Promise<void>;
+  flush?: (controller: TransformStreamDefaultController<O>) => void | Promise<void>;
 }
 
-interface QBTransformStreamDefaultController<O = unknown> {
+interface TransformStreamDefaultController<O = unknown> {
   enqueue(chunk: O): void;
   error(reason?: unknown): void;
   terminate(): void;
   readonly desiredSize: number | null;
 }
 
-export class QBTransformStream<I = unknown, O = unknown> {
-  readonly readable: QBReadableStream<O>;
-  readonly writable: QBWritableStream<I>;
+export class TransformStream<I = unknown, O = unknown> {
+  readonly readable: ReadableStream<O>;
+  readonly writable: WritableStream<I>;
 
-  constructor(transformer?: QBTransformer<I, O>) {
-    let readableController!: QBReadableStreamController<O>;
+  constructor(transformer?: Transformer<I, O>) {
+    let readableController!: ReadableStreamController<O>;
 
-    this.readable = new QBReadableStream<O>({
-      start(controller) {
-        readableController = controller;
-      },
+    this.readable = new ReadableStream<O>({
+      start(controller) { readableController = controller; },
     });
 
-    const tController: QBTransformStreamDefaultController<O> = {
-      enqueue(chunk: O) {
-        readableController.enqueue(chunk);
-      },
-      error(reason?: unknown) {
-        readableController.error(reason);
-      },
-      terminate() {
-        readableController.close();
-      },
-      get desiredSize() {
-        return readableController.desiredSize;
-      },
+    const ctrl: TransformStreamDefaultController<O> = {
+      enqueue(chunk: O) { readableController.enqueue(chunk); },
+      error(reason?: unknown) { readableController.error(reason); },
+      terminate() { readableController.close(); },
+      get desiredSize() { return readableController.desiredSize; },
     };
 
-    try {
-      transformer?.start?.(tController);
-    } catch (e) {
-      readableController.error(e);
-    }
+    try { transformer?.start?.(ctrl); } catch (e) { readableController.error(e); }
 
-    this.writable = new QBWritableStream<I>({
+    this.writable = new WritableStream<I>({
       async write(chunk: I) {
         if (transformer?.transform) {
-          await transformer.transform(chunk, tController);
+          await transformer.transform(chunk, ctrl);
         } else {
-          tController.enqueue(chunk as unknown as O);
+          ctrl.enqueue(chunk as unknown as O);
         }
       },
       async close() {
-        if (transformer?.flush) {
-          await transformer.flush(tController);
-        }
-        tController.terminate();
+        if (transformer?.flush) await transformer.flush(ctrl);
+        ctrl.terminate();
       },
-      abort(reason?: unknown) {
-        tController.error(reason);
-      },
+      abort(reason?: unknown) { ctrl.error(reason); },
     });
   }
 }
 
 // ──────────────────── TextEncoderStream / TextDecoderStream ────────────────────
 
-class QBTextEncoderStream extends QBTransformStream<string, Uint8Array> {
+export class TextEncoderStream extends TransformStream<string, Uint8Array> {
   readonly encoding = "utf-8";
 
   constructor() {
     const encoder = new TextEncoder();
     super({
-      transform(chunk, controller) {
-        controller.enqueue(encoder.encode(chunk));
-      },
+      transform(chunk, controller) { controller.enqueue(encoder.encode(chunk)); },
     });
   }
 }
 
-class QBTextDecoderStream extends QBTransformStream<BufferSource, string> {
+export class TextDecoderStream extends TransformStream<BufferSource, string> {
   readonly encoding: string;
   readonly fatal: boolean;
   readonly ignoreBOM: boolean;
@@ -516,41 +487,3 @@ class QBTextDecoderStream extends QBTransformStream<BufferSource, string> {
     this.ignoreBOM = decoder.ignoreBOM;
   }
 }
-
-// ──────────────────── ReadableStream.pipeThrough / pipeTo ────────────────────
-
-QBReadableStream.prototype.pipeThrough = function <T>(
-  this: QBReadableStream,
-  transform: { writable: QBWritableStream; readable: QBReadableStream<T> },
-): QBReadableStream<T> {
-  void this.pipeTo(transform.writable);
-  return transform.readable;
-};
-
-QBReadableStream.prototype.pipeTo = async function (
-  this: QBReadableStream,
-  dest: QBWritableStream,
-): Promise<void> {
-  const reader = this.getReader();
-  const writer = dest.getWriter();
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      await writer.write(value);
-    }
-    await writer.close();
-  } catch (e) {
-    await writer.abort(e);
-  } finally {
-    reader.releaseLock();
-  }
-};
-
-(globalThis as Record<string, unknown>).ReadableStream = QBReadableStream;
-(globalThis as Record<string, unknown>).ReadableStreamDefaultReader = QBReadableStreamDefaultReader;
-(globalThis as Record<string, unknown>).WritableStream = QBWritableStream;
-(globalThis as Record<string, unknown>).WritableStreamDefaultWriter = QBWritableStreamDefaultWriter;
-(globalThis as Record<string, unknown>).TransformStream = QBTransformStream;
-(globalThis as Record<string, unknown>).TextEncoderStream = QBTextEncoderStream;
-(globalThis as Record<string, unknown>).TextDecoderStream = QBTextDecoderStream;

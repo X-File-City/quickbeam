@@ -1,20 +1,20 @@
-import { QBBlob, SYM_BYTES } from "./blob";
-import { QBReadableStream } from "./streams";
-import { QBHeaders } from "./headers";
-import type { QBHeadersInit } from "./headers";
-import { QBAbortSignal } from "./abort";
+import { AbortSignal } from "./abort";
+import { Blob, SYM_BYTES } from "./blob";
+import { ReadableStream } from "./streams";
+import { Headers } from "./headers";
+import type { HeadersInit } from "./headers";
 
-type QBBodyInit = string | Uint8Array | ArrayBuffer | QBBlob | URLSearchParams | QBReadableStream;
+type BodyInit = string | Uint8Array | ArrayBuffer | Blob | URLSearchParams | ReadableStream;
 
-interface QBRequestInit {
+interface RequestInit {
   method?: string;
-  headers?: QBHeadersInit;
-  body?: QBBodyInit | null;
-  signal?: QBAbortSignal;
+  headers?: HeadersInit;
+  body?: BodyInit | null;
+  signal?: AbortSignal;
   redirect?: RequestRedirect;
 }
 
-async function bodyToBytes(body: QBBodyInit): Promise<{
+async function bodyToBytes(body: BodyInit): Promise<{
   bytes: Uint8Array | null;
   contentType: string | null;
 }> {
@@ -27,7 +27,7 @@ async function bodyToBytes(body: QBBodyInit): Promise<{
   if (body instanceof ArrayBuffer) {
     return { bytes: new Uint8Array(body), contentType: null };
   }
-  if (body instanceof QBBlob) {
+  if (body instanceof Blob) {
     return { bytes: body[SYM_BYTES](), contentType: body.type || null };
   }
   if (body instanceof URLSearchParams) {
@@ -36,8 +36,8 @@ async function bodyToBytes(body: QBBodyInit): Promise<{
       contentType: "application/x-www-form-urlencoded;charset=UTF-8",
     };
   }
-  if (body instanceof QBReadableStream) {
-    const reader = (body as QBReadableStream<Uint8Array>).getReader();
+  if (body instanceof ReadableStream) {
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
     const chunks: Uint8Array[] = [];
     for (;;) {
       const { value, done } = await reader.read();
@@ -57,59 +57,41 @@ async function bodyToBytes(body: QBBodyInit): Promise<{
   return { bytes: null, contentType: null };
 }
 
-function buildRequestFromExisting(input: QBRequest, init?: QBRequestInit) {
-  return {
-    url: input.url,
-    method: (init?.method ?? input.method).toUpperCase(),
-    headers: new QBHeaders(init?.headers ?? (input.headers as unknown as QBHeadersInit)),
-    body: init?.body !== undefined ? init.body : input.body,
-    signal: init?.signal ?? input.signal,
-    redirect: init?.redirect ?? input.redirect,
-  };
-}
-
-function buildRequestFromURL(url: string, init?: QBRequestInit) {
-  return {
-    url,
-    method: (init?.method ?? "GET").toUpperCase(),
-    headers: new QBHeaders(init?.headers),
-    body: init?.body ?? null,
-    signal: init?.signal ?? new QBAbortSignal(),
-    redirect: init?.redirect ?? "follow",
-  };
-}
-
-class QBRequest {
+class Request {
   readonly url: string;
   readonly method: string;
-  readonly headers: QBHeaders;
-  readonly body: QBBodyInit | null;
-  readonly signal: QBAbortSignal;
+  readonly headers: Headers;
+  readonly body: BodyInit | null;
+  readonly signal: AbortSignal;
   readonly redirect: RequestRedirect;
 
-  constructor(input: string | QBRequest, init?: QBRequestInit) {
-    const props =
-      input instanceof QBRequest
-        ? buildRequestFromExisting(input, init)
-        : buildRequestFromURL(input, init);
-
-    this.url = props.url;
-    this.method = props.method;
-    this.headers = props.headers;
-    this.body = props.body ?? null;
-    this.signal = props.signal;
-    this.redirect = props.redirect;
+  constructor(input: string | Request, init?: RequestInit) {
+    if (input instanceof Request) {
+      this.url = input.url;
+      this.method = (init?.method ?? input.method).toUpperCase();
+      this.headers = new Headers(init?.headers ?? (input.headers as unknown as HeadersInit));
+      this.body = init?.body !== undefined ? init.body : input.body;
+      this.signal = init?.signal ?? input.signal;
+      this.redirect = init?.redirect ?? input.redirect;
+    } else {
+      this.url = input;
+      this.method = (init?.method ?? "GET").toUpperCase();
+      this.headers = new Headers(init?.headers);
+      this.body = init?.body ?? null;
+      this.signal = init?.signal ?? new AbortSignal();
+      this.redirect = init?.redirect ?? "follow";
+    }
   }
 
-  clone(): QBRequest {
-    return new QBRequest(this);
+  clone(): Request {
+    return new Request(this);
   }
 }
 
-class QBResponse {
+class Response {
   readonly status: number;
   readonly statusText: string;
-  readonly headers: QBHeaders;
+  readonly headers: Headers;
   readonly url: string;
   readonly redirected: boolean;
   readonly type: ResponseType = "basic";
@@ -121,7 +103,7 @@ class QBResponse {
     init: {
       status: number;
       statusText: string;
-      headers: QBHeaders;
+      headers: Headers;
       url: string;
       redirected?: boolean;
     },
@@ -142,10 +124,10 @@ class QBResponse {
     return this.#bodyUsed;
   }
 
-  get body(): QBReadableStream<Uint8Array> | null {
+  get body(): ReadableStream<Uint8Array> | null {
     if (this.#body === null) return null;
     const bytes = this.#body;
-    return new QBReadableStream<Uint8Array>({
+    return new ReadableStream<Uint8Array>({
       start(controller) {
         if (bytes.length > 0) controller.enqueue(bytes);
         controller.close();
@@ -175,50 +157,40 @@ class QBResponse {
     return JSON.parse(await this.text());
   }
 
-  async blob(): Promise<QBBlob> {
+  async blob(): Promise<Blob> {
     const bytes = this.#consumeBody();
-    return new QBBlob([bytes], {
-      type: this.headers.get("content-type") ?? "",
-    });
+    return new Blob([bytes], { type: this.headers.get("content-type") ?? "" });
   }
 
-  clone(): QBResponse {
+  clone(): Response {
     if (this.#bodyUsed) throw new TypeError("Cannot clone a used response");
-    return new QBResponse(this.#body ? this.#body.slice() : null, {
+    return new Response(this.#body ? this.#body.slice() : null, {
       status: this.status,
       statusText: this.statusText,
-      headers: new QBHeaders(this.headers as unknown as QBHeadersInit),
+      headers: new Headers(this.headers as unknown as HeadersInit),
       url: this.url,
       redirected: this.redirected,
     });
   }
 
-  static error(): QBResponse {
-    return new QBResponse(null, {
-      status: 0,
-      statusText: "",
-      headers: new QBHeaders(),
-      url: "",
+  static error(): Response {
+    return new Response(null, {
+      status: 0, statusText: "", headers: new Headers(), url: "",
     });
   }
 
-  static redirect(url: string, status = 302): QBResponse {
-    const headers = new QBHeaders([["location", url]]);
-    return new QBResponse(null, { status, statusText: "", headers, url: "" });
+  static redirect(url: string, status = 302): Response {
+    const headers = new Headers([["location", url]]);
+    return new Response(null, { status, statusText: "", headers, url: "" });
   }
 
-  static json(data: unknown, init?: { status?: number; headers?: QBHeadersInit }): QBResponse {
+  static json(data: unknown, init?: { status?: number; headers?: HeadersInit }): Response {
     const body = new TextEncoder().encode(JSON.stringify(data));
-    const headers = new QBHeaders(init?.headers);
+    const headers = new Headers(init?.headers);
     if (!headers.has("content-type")) {
       headers.set("content-type", "application/json");
     }
-    return new QBResponse(body, {
-      status: init?.status ?? 200,
-      statusText: "",
-      headers,
-      url: "",
-    });
+    return new Response(body, { status: init?.status ?? 200, statusText: "", headers, url: "" });
   }
 }
 
@@ -231,8 +203,8 @@ interface FetchResult {
   redirected: boolean;
 }
 
-async function qbFetch(input: string | QBRequest, init?: QBRequestInit): Promise<QBResponse> {
-  const request = input instanceof QBRequest ? input : new QBRequest(input, init);
+async function fetchImpl(input: string | Request, init?: RequestInit): Promise<Response> {
+  const request = input instanceof Request ? input : new Request(input, init);
 
   request.signal.throwIfAborted();
 
@@ -249,12 +221,10 @@ async function qbFetch(input: string | QBRequest, init?: QBRequestInit): Promise
     request.headers.set("content-type", bodyContentType);
   }
 
-  const headerEntries: [string, string][] = [...request.headers.entries()];
-
   const payload = {
     url: request.url,
     method: request.method,
-    headers: headerEntries,
+    headers: [...request.headers.entries()] as [string, string][],
     body: resolvedBody,
     redirect: request.redirect,
   };
@@ -271,18 +241,16 @@ async function qbFetch(input: string | QBRequest, init?: QBRequestInit): Promise
 
   const result = await Promise.race([resultPromise, abortPromise]);
 
-  const responseHeaders = new QBHeaders(result.headers);
-  const responseBody = result.body instanceof Uint8Array ? result.body : null;
-
-  return new QBResponse(responseBody, {
-    status: result.status,
-    statusText: result.statusText,
-    headers: responseHeaders,
-    url: result.url || request.url,
-    redirected: result.redirected,
-  });
+  return new Response(
+    result.body instanceof Uint8Array ? result.body : null,
+    {
+      status: result.status,
+      statusText: result.statusText,
+      headers: new Headers(result.headers),
+      url: result.url || request.url,
+      redirected: result.redirected,
+    },
+  );
 }
 
-(globalThis as Record<string, unknown>).Request = QBRequest;
-(globalThis as Record<string, unknown>).Response = QBResponse;
-(globalThis as Record<string, unknown>).fetch = qbFetch;
+export { Request, Response, fetchImpl as fetch };

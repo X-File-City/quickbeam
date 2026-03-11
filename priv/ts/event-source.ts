@@ -1,8 +1,11 @@
+import { EventTarget } from "./event-target";
+import { Event, MessageEvent, ErrorEvent } from "./event";
+
 type EventSourceState = 0 | 1 | 2;
 
-const eventSourceRegistry = new Map<string, QBEventSource>();
+const eventSourceRegistry = new Map<string, EventSource>();
 
-class QBEventSource extends EventTarget {
+class EventSource extends EventTarget {
   static readonly CONNECTING: EventSourceState = 0;
   static readonly OPEN: EventSourceState = 1;
   static readonly CLOSED: EventSourceState = 2;
@@ -28,7 +31,6 @@ class QBEventSource extends EventTarget {
     this.url = url;
     this.#id = String(Math.random()).slice(2);
     eventSourceRegistry.set(this.#id, this);
-
     this.#taskPid = beam.callSync("__eventsource_open", url, this.#id);
   }
 
@@ -95,4 +97,4 @@ __qb_register_dispatcher((msg: unknown): boolean => {
   return false;
 });
 
-(globalThis as Record<string, unknown>).EventSource = QBEventSource;
+export { EventSource };

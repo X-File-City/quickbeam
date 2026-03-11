@@ -1,13 +1,52 @@
-import "./event-target";
-import "./abort";
-import "./streams";
-import "./blob";
-import "./headers";
-import "./fetch";
-import "./broadcast-channel";
-import "./websocket";
+import { DOMException } from "./dom-exception";
+import { Event, MessageEvent, CloseEvent, ErrorEvent } from "./event";
+import { EventTarget } from "./event-target";
+import { AbortSignal, AbortController } from "./abort";
+import {
+  ReadableStream,
+  ReadableStreamDefaultReader,
+  WritableStream,
+  WritableStreamDefaultWriter,
+  TransformStream,
+  TextEncoderStream,
+  TextDecoderStream,
+} from "./streams";
+import { Blob, File } from "./blob";
+import { Headers } from "./headers";
+import { Request, Response, fetch } from "./fetch";
+import { BroadcastChannel } from "./broadcast-channel";
+import { WebSocket } from "./websocket";
+import { Worker } from "./worker";
+import { EventSource } from "./event-source";
+
 import "./console-ext";
-import "./worker";
 import "./locks";
 import "./storage";
-import "./event-source";
+
+Object.assign(globalThis, {
+  DOMException,
+  Event,
+  MessageEvent,
+  CloseEvent,
+  ErrorEvent,
+  EventTarget,
+  AbortSignal,
+  AbortController,
+  ReadableStream,
+  ReadableStreamDefaultReader,
+  WritableStream,
+  WritableStreamDefaultWriter,
+  TransformStream,
+  TextEncoderStream,
+  TextDecoderStream,
+  Blob,
+  File,
+  Headers,
+  Request,
+  Response,
+  fetch,
+  BroadcastChannel,
+  WebSocket,
+  Worker,
+  EventSource,
+});

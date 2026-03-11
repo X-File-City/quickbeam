@@ -1,14 +1,18 @@
-type WorkerMessageHandler = ((event: { data: unknown }) => void) | null;
-type WorkerErrorHandler = ((event: { message: string; error: unknown }) => void) | null;
+import { DOMException } from "./dom-exception";
+import { EventTarget } from "./event-target";
+import { MessageEvent, ErrorEvent } from "./event";
 
-const workerRegistry = new Map<string, QBWorker>();
+type MessageHandler = ((event: { data: unknown }) => void) | null;
+type ErrorHandler = ((event: { message: string; error: unknown }) => void) | null;
 
-class QBWorker extends EventTarget {
+const workerRegistry = new Map<string, Worker>();
+
+class Worker extends EventTarget {
   #pid: unknown;
   #terminated = false;
   #earlyMessages: unknown[] = [];
-  #onmessage: WorkerMessageHandler = null;
-  onerror: WorkerErrorHandler = null;
+  #onmessage: MessageHandler = null;
+  onerror: ErrorHandler = null;
 
   constructor(script: string) {
     super();
@@ -17,11 +21,11 @@ class QBWorker extends EventTarget {
     workerRegistry.set(pidKey, this);
   }
 
-  get onmessage(): WorkerMessageHandler {
+  get onmessage(): MessageHandler {
     return this.#onmessage;
   }
 
-  set onmessage(handler: WorkerMessageHandler) {
+  set onmessage(handler: MessageHandler) {
     this.#onmessage = handler;
     if (handler && this.#earlyMessages.length > 0) {
       const queued = this.#earlyMessages.splice(0);
@@ -81,4 +85,4 @@ __qb_register_dispatcher((msg: unknown): boolean => {
   return true;
 });
 
-(globalThis as Record<string, unknown>).Worker = QBWorker;
+export { Worker };

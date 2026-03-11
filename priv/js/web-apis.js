@@ -1,8 +1,18 @@
 (() => {
-  // priv/ts/event-target.ts
+  // priv/ts/dom-exception.ts
+  class DOMException extends Error {
+    code;
+    constructor(message = "", name = "Error") {
+      super(message);
+      this.name = name;
+      this.code = 0;
+    }
+  }
+
+  // priv/ts/event.ts
   var SYM_STOP_IMMEDIATE = Symbol("stopImmediate");
 
-  class QBEvent {
+  class Event {
     type;
     timeStamp;
     cancelBubble = false;
@@ -30,7 +40,7 @@
     }
   }
 
-  class QBMessageEvent extends QBEvent {
+  class MessageEvent extends Event {
     data;
     origin;
     lastEventId;
@@ -42,7 +52,7 @@
     }
   }
 
-  class QBCloseEvent extends QBEvent {
+  class CloseEvent extends Event {
     code;
     reason;
     wasClean;
@@ -54,7 +64,7 @@
     }
   }
 
-  class QBErrorEvent extends QBEvent {
+  class ErrorEvent extends Event {
     message;
     error;
     constructor(type, init) {
@@ -64,7 +74,8 @@
     }
   }
 
-  class QBEventTarget {
+  // priv/ts/event-target.ts
+  class EventTarget {
     #listeners = new Map;
     addEventListener(type, callback, options) {
       if (callback === null)
@@ -129,25 +140,9 @@
     }
   }
 
-  class QBDOMException extends Error {
-    code;
-    constructor(message = "", name = "Error") {
-      super(message);
-      this.name = name;
-      this.code = 0;
-    }
-  }
-  globalThis.Event = QBEvent;
-  globalThis.MessageEvent = QBMessageEvent;
-  globalThis.CloseEvent = QBCloseEvent;
-  globalThis.ErrorEvent = QBErrorEvent;
-  globalThis.EventTarget = QBEventTarget;
-  globalThis.DOMException = QBDOMException;
-
   // priv/ts/abort.ts
   var SYM_ABORT = Symbol("abort");
-
-  class QBAbortSignal extends QBEventTarget {
+  class AbortSignal extends EventTarget {
     #aborted = false;
     #reason = undefined;
     onabort = null;
@@ -165,23 +160,23 @@
       if (this.#aborted)
         return;
       this.#aborted = true;
-      this.#reason = reason ?? new QBDOMException("The operation was aborted.", "AbortError");
-      const event = new QBEvent("abort");
+      this.#reason = reason ?? new DOMException("The operation was aborted.", "AbortError");
+      const event = new Event("abort");
       this.onabort?.(event);
       this.dispatchEvent(event);
     }
     static timeout(ms) {
-      const controller = new QBAbortController;
-      setTimeout(() => controller.abort(new QBDOMException("The operation timed out.", "TimeoutError")), ms);
+      const controller = new AbortController;
+      setTimeout(() => controller.abort(new DOMException("The operation timed out.", "TimeoutError")), ms);
       return controller.signal;
     }
     static abort(reason) {
-      const s = new QBAbortSignal;
+      const s = new AbortSignal;
       s[SYM_ABORT](reason);
       return s;
     }
     static any(signals) {
-      const controller = new QBAbortController;
+      const controller = new AbortController;
       for (const s of signals) {
         if (s.aborted) {
           controller.abort(s.reason);
@@ -193,8 +188,8 @@
     }
   }
 
-  class QBAbortController {
-    #signal = new QBAbortSignal;
+  class AbortController {
+    #signal = new AbortSignal;
     get signal() {
       return this.#signal;
     }
@@ -202,15 +197,13 @@
       this.#signal[SYM_ABORT](reason);
     }
   }
-  globalThis.AbortSignal = QBAbortSignal;
-  globalThis.AbortController = QBAbortController;
 
   // priv/ts/streams.ts
   var SYM_READ = Symbol("read");
   var SYM_RELEASE = Symbol("releaseLock");
   var SYM_CANCEL = Symbol("cancel");
 
-  class QBReadableStream {
+  class ReadableStream {
     #queue = [];
     #state = "readable";
     #storedError = undefined;
@@ -272,7 +265,7 @@
       if (this.#locked)
         throw new TypeError("ReadableStream is already locked");
       this.#locked = true;
-      return new QBReadableStreamDefaultReader(this);
+      return new ReadableStreamDefaultReader(this);
     }
     async cancel(reason) {
       if (this.#locked)
@@ -281,10 +274,75 @@
       this.#state = "closed";
       this.#queue = [];
     }
-    [SYM_READ]() {
-      if (this.#state === "errored") {
-        return Promise.reject(this.#storedError);
+    pipeThrough(transform) {
+      this.pipeTo(transform.writable);
+      return transform.readable;
+    }
+    async pipeTo(dest) {
+      const reader = this.getReader();
+      const writer = dest.getWriter();
+      try {
+        for (;; ) {
+          const { value, done } = await reader.read();
+          if (done)
+            break;
+          await writer.write(value);
+        }
+        await writer.close();
+      } catch (e) {
+        await writer.abort(e);
+      } finally {
+        reader.releaseLock();
       }
+    }
+    tee() {
+      const reader = this.getReader();
+      let cancelled1 = false;
+      let cancelled2 = false;
+      let ctrl2;
+      const stream1 = new ReadableStream({
+        pull(controller) {
+          return reader.read().then(({ value, done }) => {
+            if (done) {
+              if (!cancelled1)
+                controller.close();
+              if (!cancelled2)
+                ctrl2.close();
+              return;
+            }
+            if (!cancelled1)
+              controller.enqueue(value);
+            if (!cancelled2)
+              ctrl2.enqueue(value);
+          });
+        },
+        cancel() {
+          cancelled1 = true;
+        }
+      });
+      const stream2 = new ReadableStream({
+        start(controller) {
+          ctrl2 = controller;
+        },
+        cancel() {
+          cancelled2 = true;
+        }
+      });
+      return [stream1, stream2];
+    }
+    static from(iterable) {
+      return new ReadableStream({
+        async start(controller) {
+          for await (const chunk of iterable) {
+            controller.enqueue(chunk);
+          }
+          controller.close();
+        }
+      });
+    }
+    [SYM_READ]() {
+      if (this.#state === "errored")
+        return Promise.reject(this.#storedError);
       if (this.#queue.length > 0) {
         const value = this.#queue.shift();
         this.#callPull();
@@ -339,54 +397,9 @@
         reader.releaseLock();
       }
     }
-    tee() {
-      const reader = this.getReader();
-      let cancelled1 = false;
-      let cancelled2 = false;
-      let ctrl2;
-      const stream1 = new QBReadableStream({
-        pull(controller) {
-          return reader.read().then(({ value, done }) => {
-            if (done) {
-              if (!cancelled1)
-                controller.close();
-              if (!cancelled2)
-                ctrl2.close();
-              return;
-            }
-            if (!cancelled1)
-              controller.enqueue(value);
-            if (!cancelled2)
-              ctrl2.enqueue(value);
-          });
-        },
-        cancel() {
-          cancelled1 = true;
-        }
-      });
-      const stream2 = new QBReadableStream({
-        start(controller) {
-          ctrl2 = controller;
-        },
-        cancel() {
-          cancelled2 = true;
-        }
-      });
-      return [stream1, stream2];
-    }
-    static from(iterable) {
-      return new QBReadableStream({
-        async start(controller) {
-          for await (const chunk of iterable) {
-            controller.enqueue(chunk);
-          }
-          controller.close();
-        }
-      });
-    }
   }
 
-  class QBReadableStreamDefaultReader {
+  class ReadableStreamDefaultReader {
     #stream;
     #closed;
     #closedResolve;
@@ -412,7 +425,7 @@
     }
   }
 
-  class QBWritableStream {
+  class WritableStream {
     #sink;
     #state = "writable";
     #storedError = undefined;
@@ -423,9 +436,10 @@
     #abortController = new AbortController;
     constructor(sink) {
       this.#sink = sink;
+      const ac = this.#abortController;
       const controller = {
         get signal() {
-          return this._ac.signal;
+          return ac.signal;
         },
         error: (e) => {
           if (this.#state !== "writable")
@@ -435,7 +449,6 @@
           this.#closeReject?.(e);
         }
       };
-      controller._ac = this.#abortController;
       this.#controller = controller;
       try {
         const result = sink?.start?.(controller);
@@ -469,13 +482,14 @@
       if (this.#locked)
         throw new TypeError("WritableStream is already locked");
       this.#locked = true;
-      return new QBWritableStreamDefaultWriter(this);
+      return new WritableStreamDefaultWriter(this);
     }
-    async _write(chunk) {
+    _write(chunk) {
       if (this.#state !== "writable") {
-        throw this.#storedError ?? new TypeError("Stream is not writable");
+        return Promise.reject(this.#storedError ?? new TypeError("Stream is not writable"));
       }
-      await this.#sink?.write?.(chunk, this.#controller);
+      const r = this.#sink?.write?.(chunk, this.#controller);
+      return r instanceof Promise ? r : Promise.resolve();
     }
     async _close() {
       if (this.#state !== "writable")
@@ -512,7 +526,7 @@
     }
   }
 
-  class QBWritableStreamDefaultWriter {
+  class WritableStreamDefaultWriter {
     #stream;
     #closedPromise;
     constructor(stream) {
@@ -544,17 +558,17 @@
     }
   }
 
-  class QBTransformStream {
+  class TransformStream {
     readable;
     writable;
     constructor(transformer) {
       let readableController;
-      this.readable = new QBReadableStream({
+      this.readable = new ReadableStream({
         start(controller) {
           readableController = controller;
         }
       });
-      const tController = {
+      const ctrl = {
         enqueue(chunk) {
           readableController.enqueue(chunk);
         },
@@ -569,32 +583,31 @@
         }
       };
       try {
-        transformer?.start?.(tController);
+        transformer?.start?.(ctrl);
       } catch (e) {
         readableController.error(e);
       }
-      this.writable = new QBWritableStream({
+      this.writable = new WritableStream({
         async write(chunk) {
           if (transformer?.transform) {
-            await transformer.transform(chunk, tController);
+            await transformer.transform(chunk, ctrl);
           } else {
-            tController.enqueue(chunk);
+            ctrl.enqueue(chunk);
           }
         },
         async close() {
-          if (transformer?.flush) {
-            await transformer.flush(tController);
-          }
-          tController.terminate();
+          if (transformer?.flush)
+            await transformer.flush(ctrl);
+          ctrl.terminate();
         },
         abort(reason) {
-          tController.error(reason);
+          ctrl.error(reason);
         }
       });
     }
   }
 
-  class QBTextEncoderStream extends QBTransformStream {
+  class TextEncoderStream extends TransformStream {
     encoding = "utf-8";
     constructor() {
       const encoder = new TextEncoder;
@@ -606,7 +619,7 @@
     }
   }
 
-  class QBTextDecoderStream extends QBTransformStream {
+  class TextDecoderStream extends TransformStream {
     encoding;
     fatal;
     ignoreBOM;
@@ -628,45 +641,17 @@
       this.ignoreBOM = decoder.ignoreBOM;
     }
   }
-  QBReadableStream.prototype.pipeThrough = function(transform) {
-    this.pipeTo(transform.writable);
-    return transform.readable;
-  };
-  QBReadableStream.prototype.pipeTo = async function(dest) {
-    const reader = this.getReader();
-    const writer = dest.getWriter();
-    try {
-      for (;; ) {
-        const { value, done } = await reader.read();
-        if (done)
-          break;
-        await writer.write(value);
-      }
-      await writer.close();
-    } catch (e) {
-      await writer.abort(e);
-    } finally {
-      reader.releaseLock();
-    }
-  };
-  globalThis.ReadableStream = QBReadableStream;
-  globalThis.ReadableStreamDefaultReader = QBReadableStreamDefaultReader;
-  globalThis.WritableStream = QBWritableStream;
-  globalThis.WritableStreamDefaultWriter = QBWritableStreamDefaultWriter;
-  globalThis.TransformStream = QBTransformStream;
-  globalThis.TextEncoderStream = QBTextEncoderStream;
-  globalThis.TextDecoderStream = QBTextDecoderStream;
 
   // priv/ts/blob.ts
   var SYM_BYTES = Symbol("bytes");
-  function normalizeQBBlobPart(part) {
+  function normalizePart(part) {
     if (part instanceof Uint8Array)
       return part;
     if (part instanceof ArrayBuffer)
       return new Uint8Array(part);
     if (part instanceof DataView)
       return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
-    if (part instanceof QBBlob)
+    if (part instanceof Blob)
       return part[SYM_BYTES]();
     if (typeof part === "string")
       return new TextEncoder().encode(part);
@@ -693,14 +678,16 @@
       return Math.max(size + idx, 0);
     return Math.min(idx, size);
   }
+  function normalizeType(raw) {
+    return /^[\x20-\x7E]*$/.test(raw) ? raw.toLowerCase() : "";
+  }
 
-  class QBBlob {
+  class Blob {
     #parts;
     #type;
     constructor(parts, options) {
-      const raw = options?.type ?? "";
-      this.#type = /^[\x20-\x7E]*$/.test(raw) ? raw.toLowerCase() : "";
-      this.#parts = (parts ?? []).map(normalizeQBBlobPart);
+      this.#type = normalizeType(options?.type ?? "");
+      this.#parts = (parts ?? []).map(normalizePart);
     }
     get size() {
       let total = 0;
@@ -724,14 +711,13 @@
       const bytes = this[SYM_BYTES]();
       const s = clampIndex(start ?? 0, bytes.length);
       const e = clampIndex(end ?? bytes.length, bytes.length);
-      const raw = contentType ?? "";
-      return new QBBlob([bytes.slice(s, Math.max(s, e))], {
-        type: /^[\x20-\x7E]*$/.test(raw) ? raw : ""
+      return new Blob([bytes.slice(s, Math.max(s, e))], {
+        type: normalizeType(contentType ?? "")
       });
     }
     stream() {
       const bytes = this[SYM_BYTES]();
-      return new QBReadableStream({
+      return new ReadableStream({
         start(controller) {
           if (bytes.length > 0)
             controller.enqueue(bytes);
@@ -744,7 +730,7 @@
     }
   }
 
-  class QBFile extends QBBlob {
+  class File extends Blob {
     name;
     lastModified;
     constructor(parts, name, options) {
@@ -753,14 +739,12 @@
       this.lastModified = options?.lastModified ?? Date.now();
     }
   }
-  globalThis.Blob = QBBlob;
-  globalThis.File = QBFile;
 
   // priv/ts/headers.ts
-  class QBHeaders {
+  class Headers {
     #map = new Map;
     constructor(init) {
-      if (init instanceof QBHeaders) {
+      if (init instanceof Headers) {
         for (const [name, value] of init)
           this.append(name, value);
       } else if (Array.isArray(init)) {
@@ -821,7 +805,6 @@
       return this.entries();
     }
   }
-  globalThis.Headers = QBHeaders;
 
   // priv/ts/fetch.ts
   async function bodyToBytes(body) {
@@ -834,7 +817,7 @@
     if (body instanceof ArrayBuffer) {
       return { bytes: new Uint8Array(body), contentType: null };
     }
-    if (body instanceof QBBlob) {
+    if (body instanceof Blob) {
       return { bytes: body[SYM_BYTES](), contentType: body.type || null };
     }
     if (body instanceof URLSearchParams) {
@@ -843,7 +826,7 @@
         contentType: "application/x-www-form-urlencoded;charset=UTF-8"
       };
     }
-    if (body instanceof QBReadableStream) {
+    if (body instanceof ReadableStream) {
       const reader = body.getReader();
       const chunks = [];
       for (;; ) {
@@ -865,28 +848,8 @@
     }
     return { bytes: null, contentType: null };
   }
-  function buildRequestFromExisting(input, init) {
-    return {
-      url: input.url,
-      method: (init?.method ?? input.method).toUpperCase(),
-      headers: new QBHeaders(init?.headers ?? input.headers),
-      body: init?.body !== undefined ? init.body : input.body,
-      signal: init?.signal ?? input.signal,
-      redirect: init?.redirect ?? input.redirect
-    };
-  }
-  function buildRequestFromURL(url, init) {
-    return {
-      url,
-      method: (init?.method ?? "GET").toUpperCase(),
-      headers: new QBHeaders(init?.headers),
-      body: init?.body ?? null,
-      signal: init?.signal ?? new QBAbortSignal,
-      redirect: init?.redirect ?? "follow"
-    };
-  }
 
-  class QBRequest {
+  class Request {
     url;
     method;
     headers;
@@ -894,20 +857,28 @@
     signal;
     redirect;
     constructor(input, init) {
-      const props = input instanceof QBRequest ? buildRequestFromExisting(input, init) : buildRequestFromURL(input, init);
-      this.url = props.url;
-      this.method = props.method;
-      this.headers = props.headers;
-      this.body = props.body ?? null;
-      this.signal = props.signal;
-      this.redirect = props.redirect;
+      if (input instanceof Request) {
+        this.url = input.url;
+        this.method = (init?.method ?? input.method).toUpperCase();
+        this.headers = new Headers(init?.headers ?? input.headers);
+        this.body = init?.body !== undefined ? init.body : input.body;
+        this.signal = init?.signal ?? input.signal;
+        this.redirect = init?.redirect ?? input.redirect;
+      } else {
+        this.url = input;
+        this.method = (init?.method ?? "GET").toUpperCase();
+        this.headers = new Headers(init?.headers);
+        this.body = init?.body ?? null;
+        this.signal = init?.signal ?? new AbortSignal;
+        this.redirect = init?.redirect ?? "follow";
+      }
     }
     clone() {
-      return new QBRequest(this);
+      return new Request(this);
     }
   }
 
-  class QBResponse {
+  class Response {
     status;
     statusText;
     headers;
@@ -934,7 +905,7 @@
       if (this.#body === null)
         return null;
       const bytes = this.#body;
-      return new QBReadableStream({
+      return new ReadableStream({
         start(controller) {
           if (bytes.length > 0)
             controller.enqueue(bytes);
@@ -962,49 +933,42 @@
     }
     async blob() {
       const bytes = this.#consumeBody();
-      return new QBBlob([bytes], {
-        type: this.headers.get("content-type") ?? ""
-      });
+      return new Blob([bytes], { type: this.headers.get("content-type") ?? "" });
     }
     clone() {
       if (this.#bodyUsed)
         throw new TypeError("Cannot clone a used response");
-      return new QBResponse(this.#body ? this.#body.slice() : null, {
+      return new Response(this.#body ? this.#body.slice() : null, {
         status: this.status,
         statusText: this.statusText,
-        headers: new QBHeaders(this.headers),
+        headers: new Headers(this.headers),
         url: this.url,
         redirected: this.redirected
       });
     }
     static error() {
-      return new QBResponse(null, {
+      return new Response(null, {
         status: 0,
         statusText: "",
-        headers: new QBHeaders,
+        headers: new Headers,
         url: ""
       });
     }
     static redirect(url, status = 302) {
-      const headers = new QBHeaders([["location", url]]);
-      return new QBResponse(null, { status, statusText: "", headers, url: "" });
+      const headers = new Headers([["location", url]]);
+      return new Response(null, { status, statusText: "", headers, url: "" });
     }
     static json(data, init) {
       const body = new TextEncoder().encode(JSON.stringify(data));
-      const headers = new QBHeaders(init?.headers);
+      const headers = new Headers(init?.headers);
       if (!headers.has("content-type")) {
         headers.set("content-type", "application/json");
       }
-      return new QBResponse(body, {
-        status: init?.status ?? 200,
-        statusText: "",
-        headers,
-        url: ""
-      });
+      return new Response(body, { status: init?.status ?? 200, statusText: "", headers, url: "" });
     }
   }
-  async function qbFetch(input, init) {
-    const request = input instanceof QBRequest ? input : new QBRequest(input, init);
+  async function fetchImpl(input, init) {
+    const request = input instanceof Request ? input : new Request(input, init);
     request.signal.throwIfAborted();
     let resolvedBody = null;
     let bodyContentType = null;
@@ -1016,11 +980,10 @@
     if (bodyContentType && !request.headers.has("content-type")) {
       request.headers.set("content-type", bodyContentType);
     }
-    const headerEntries = [...request.headers.entries()];
     const payload = {
       url: request.url,
       method: request.method,
-      headers: headerEntries,
+      headers: [...request.headers.entries()],
       body: resolvedBody,
       redirect: request.redirect
     };
@@ -1033,41 +996,20 @@
       request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true });
     });
     const result = await Promise.race([resultPromise, abortPromise]);
-    const responseHeaders = new QBHeaders(result.headers);
-    const responseBody = result.body instanceof Uint8Array ? result.body : null;
-    return new QBResponse(responseBody, {
+    return new Response(result.body instanceof Uint8Array ? result.body : null, {
       status: result.status,
       statusText: result.statusText,
-      headers: responseHeaders,
+      headers: new Headers(result.headers),
       url: result.url || request.url,
       redirected: result.redirected
     });
   }
-  globalThis.Request = QBRequest;
-  globalThis.Response = QBResponse;
-  globalThis.fetch = qbFetch;
 
   // priv/ts/broadcast-channel.ts
   var SYM_RECEIVE = Symbol("receive");
   var channelRegistry = new Map;
-  function registerChannel(ch) {
-    let set = channelRegistry.get(ch.name);
-    if (!set) {
-      set = new Set;
-      channelRegistry.set(ch.name, set);
-    }
-    set.add(ch);
-  }
-  function unregisterChannel(ch) {
-    const set = channelRegistry.get(ch.name);
-    if (set) {
-      set.delete(ch);
-      if (set.size === 0)
-        channelRegistry.delete(ch.name);
-    }
-  }
 
-  class QBBroadcastChannel extends QBEventTarget {
+  class BroadcastChannel extends EventTarget {
     name;
     #closed = false;
     onmessage = null;
@@ -1075,30 +1017,39 @@
     constructor(name) {
       super();
       this.name = name;
-      registerChannel(this);
+      let set = channelRegistry.get(name);
+      if (!set) {
+        set = new Set;
+        channelRegistry.set(name, set);
+      }
+      set.add(this);
       beam.callSync("__broadcast_join", name);
     }
     postMessage(message) {
       if (this.#closed)
-        throw new QBDOMException("BroadcastChannel is closed", "InvalidStateError");
+        throw new DOMException("BroadcastChannel is closed", "InvalidStateError");
       beam.call("__broadcast_post", this.name, structuredClone(message));
     }
     close() {
       if (this.#closed)
         return;
       this.#closed = true;
-      unregisterChannel(this);
+      const set = channelRegistry.get(this.name);
+      if (set) {
+        set.delete(this);
+        if (set.size === 0)
+          channelRegistry.delete(this.name);
+      }
       beam.callSync("__broadcast_leave", this.name);
     }
     [SYM_RECEIVE](data) {
       if (this.#closed)
         return;
-      const event = new QBMessageEvent("message", { data });
+      const event = new MessageEvent("message", { data });
       this.onmessage?.(event);
       this.dispatchEvent(event);
     }
   }
-  globalThis.BroadcastChannel = QBBroadcastChannel;
   globalThis.__qb_broadcast_dispatch = (channel, data) => {
     const set = channelRegistry.get(channel);
     if (!set)
@@ -1110,7 +1061,7 @@
   // priv/ts/websocket.ts
   var SYM_HANDLE_EVENT = Symbol("handleEvent");
 
-  class QBWebSocket extends QBEventTarget {
+  class WebSocket extends EventTarget {
     static CONNECTING = 0;
     static OPEN = 1;
     static CLOSING = 2;
@@ -1121,7 +1072,7 @@
     CLOSED = 3;
     url;
     extensions = "";
-    #readyState = QBWebSocket.CONNECTING;
+    #readyState = WebSocket.CONNECTING;
     #protocol = "";
     #binaryType = "blob";
     #bufferedAmount = 0;
@@ -1152,10 +1103,10 @@
       return this.#bufferedAmount;
     }
     send(data) {
-      if (this.#readyState === QBWebSocket.CONNECTING) {
-        throw new QBDOMException("WebSocket is not open: readyState 0 (CONNECTING)", "InvalidStateError");
+      if (this.#readyState === WebSocket.CONNECTING) {
+        throw new DOMException("WebSocket is not open: readyState 0 (CONNECTING)", "InvalidStateError");
       }
-      if (this.#readyState !== QBWebSocket.OPEN)
+      if (this.#readyState !== WebSocket.OPEN)
         return;
       let payload;
       if (typeof data === "string") {
@@ -1164,7 +1115,7 @@
         payload = data;
       } else if (data instanceof ArrayBuffer) {
         payload = new Uint8Array(data);
-      } else if (data instanceof QBBlob) {
+      } else if (data instanceof Blob) {
         payload = data[SYM_BYTES]();
       } else {
         payload = JSON.stringify(data);
@@ -1172,21 +1123,21 @@
       beam.call("__ws_send", this.#id, payload);
     }
     close(code, reason) {
-      if (this.#readyState === QBWebSocket.CLOSING || this.#readyState === QBWebSocket.CLOSED)
+      if (this.#readyState === WebSocket.CLOSING || this.#readyState === WebSocket.CLOSED)
         return;
       if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
-        throw new QBDOMException(`The code must be either 1000, or between 3000 and 4999. ${code} is neither.`, "InvalidAccessError");
+        throw new DOMException(`The code must be either 1000, or between 3000 and 4999. ${code} is neither.`, "InvalidAccessError");
       }
-      this.#readyState = QBWebSocket.CLOSING;
+      this.#readyState = WebSocket.CLOSING;
       beam.call("__ws_close", this.#id, code ?? 1000, reason ?? "");
     }
     [SYM_HANDLE_EVENT](type, detail) {
       switch (type) {
         case "open":
-          this.#readyState = QBWebSocket.OPEN;
+          this.#readyState = WebSocket.OPEN;
           this.#protocol = detail?.protocol ?? "";
           {
-            const ev = new QBEvent("open");
+            const ev = new Event("open");
             this.onopen?.(ev);
             this.dispatchEvent(ev);
           }
@@ -1196,14 +1147,14 @@
           if (this.#binaryType === "arraybuffer" && messageData instanceof Uint8Array) {
             messageData = messageData.buffer;
           }
-          const ev = new QBMessageEvent("message", { data: messageData });
+          const ev = new MessageEvent("message", { data: messageData });
           this.onmessage?.(ev);
           this.dispatchEvent(ev);
           break;
         }
         case "close": {
-          this.#readyState = QBWebSocket.CLOSED;
-          const ev = new QBCloseEvent("close", {
+          this.#readyState = WebSocket.CLOSED;
+          const ev = new CloseEvent("close", {
             code: detail?.code ?? 1006,
             reason: detail?.reason ?? "",
             wasClean: detail?.wasClean ?? false
@@ -1213,7 +1164,7 @@
           break;
         }
         case "error": {
-          const ev = new QBEvent("error");
+          const ev = new Event("error");
           this.onerror?.(ev);
           this.dispatchEvent(ev);
           break;
@@ -1221,72 +1172,11 @@
       }
     }
   }
-  globalThis.WebSocket = QBWebSocket;
-
-  // priv/ts/console-ext.ts
-  var timers = new Map;
-  var counters = new Map;
-  console.debug = console.log;
-  console.trace = (...args) => {
-    const err = new Error;
-    const stack = err.stack?.split(`
-`).slice(2).join(`
-`) ?? "";
-    console.log("Trace:", ...args, `
-` + stack);
-  };
-  console.assert = (condition, ...args) => {
-    if (!condition) {
-      console.error("Assertion failed:", ...args);
-    }
-  };
-  console.time = (label = "default") => {
-    timers.set(label, performance.now());
-  };
-  console.timeLog = (label = "default", ...args) => {
-    const start = timers.get(label);
-    if (start === undefined) {
-      console.warn(`Timer '${label}' does not exist`);
-      return;
-    }
-    const elapsed = performance.now() - start;
-    console.log(`${label}: ${elapsed.toFixed(3)}ms`, ...args);
-  };
-  console.timeEnd = (label = "default") => {
-    const start = timers.get(label);
-    if (start === undefined) {
-      console.warn(`Timer '${label}' does not exist`);
-      return;
-    }
-    const elapsed = performance.now() - start;
-    timers.delete(label);
-    console.log(`${label}: ${elapsed.toFixed(3)}ms`);
-  };
-  console.count = (label = "default") => {
-    const c = (counters.get(label) ?? 0) + 1;
-    counters.set(label, c);
-    console.log(`${label}: ${c}`);
-  };
-  console.countReset = (label = "default") => {
-    counters.delete(label);
-  };
-  console.dir = (obj) => {
-    try {
-      console.log(JSON.stringify(obj, null, 2));
-    } catch {
-      console.log(String(obj));
-    }
-  };
-  console.group = (...args) => {
-    if (args.length > 0)
-      console.log(...args);
-  };
-  console.groupEnd = () => {};
 
   // priv/ts/worker.ts
   var workerRegistry = new Map;
 
-  class QBWorker extends EventTarget {
+  class Worker extends EventTarget {
     #pid;
     #terminated = false;
     #earlyMessages = [];
@@ -1355,73 +1245,11 @@
     }
     return true;
   });
-  globalThis.Worker = QBWorker;
-
-  // priv/ts/locks.ts
-  class QBLockManager {
-    async request(name, callbackOrOptions, maybeCallback) {
-      let options = {};
-      let callback;
-      if (typeof callbackOrOptions === "function") {
-        callback = callbackOrOptions;
-      } else {
-        options = callbackOrOptions;
-        callback = maybeCallback;
-      }
-      const mode = options.mode ?? "exclusive";
-      const ifAvailable = options.ifAvailable ?? false;
-      if (options.signal?.aborted) {
-        throw new DOMException("The operation was aborted.", "AbortError");
-      }
-      const result = await beam.call("__locks_request", name, mode, ifAvailable);
-      if (result === "not_available") {
-        return await callback(null);
-      }
-      if (result === "holder_down") {
-        throw new DOMException("Lock holder terminated", "AbortError");
-      }
-      const lock = { name, mode };
-      try {
-        return await callback(lock);
-      } finally {
-        await beam.call("__locks_release", name);
-      }
-    }
-    async query() {
-      return await beam.call("__locks_query");
-    }
-  }
-  var lockManager = new QBLockManager;
-  globalThis.navigator = globalThis.navigator ?? {};
-  navigator.locks = lockManager;
-
-  // priv/ts/storage.ts
-  class QBStorage {
-    getItem(key) {
-      return beam.callSync("__storage_get", String(key));
-    }
-    setItem(key, value) {
-      beam.callSync("__storage_set", String(key), String(value));
-    }
-    removeItem(key) {
-      beam.callSync("__storage_remove", String(key));
-    }
-    clear() {
-      beam.callSync("__storage_clear");
-    }
-    key(index) {
-      return beam.callSync("__storage_key", index);
-    }
-    get length() {
-      return beam.callSync("__storage_length");
-    }
-  }
-  globalThis.localStorage = new QBStorage;
 
   // priv/ts/event-source.ts
   var eventSourceRegistry = new Map;
 
-  class QBEventSource extends EventTarget {
+  class EventSource extends EventTarget {
     static CONNECTING = 0;
     static OPEN = 1;
     static CLOSED = 2;
@@ -1502,5 +1330,155 @@
     }
     return false;
   });
-  globalThis.EventSource = QBEventSource;
+
+  // priv/ts/console-ext.ts
+  var timers = new Map;
+  var counters = new Map;
+  console.debug = console.log;
+  console.trace = (...args) => {
+    const err = new Error;
+    const stack = err.stack?.split(`
+`).slice(2).join(`
+`) ?? "";
+    console.log("Trace:", ...args, `
+` + stack);
+  };
+  console.assert = (condition, ...args) => {
+    if (!condition) {
+      console.error("Assertion failed:", ...args);
+    }
+  };
+  console.time = (label = "default") => {
+    timers.set(label, performance.now());
+  };
+  console.timeLog = (label = "default", ...args) => {
+    const start = timers.get(label);
+    if (start === undefined) {
+      console.warn(`Timer '${label}' does not exist`);
+      return;
+    }
+    const elapsed = performance.now() - start;
+    console.log(`${label}: ${elapsed.toFixed(3)}ms`, ...args);
+  };
+  console.timeEnd = (label = "default") => {
+    const start = timers.get(label);
+    if (start === undefined) {
+      console.warn(`Timer '${label}' does not exist`);
+      return;
+    }
+    const elapsed = performance.now() - start;
+    timers.delete(label);
+    console.log(`${label}: ${elapsed.toFixed(3)}ms`);
+  };
+  console.count = (label = "default") => {
+    const c = (counters.get(label) ?? 0) + 1;
+    counters.set(label, c);
+    console.log(`${label}: ${c}`);
+  };
+  console.countReset = (label = "default") => {
+    counters.delete(label);
+  };
+  console.dir = (obj) => {
+    try {
+      console.log(JSON.stringify(obj, null, 2));
+    } catch {
+      console.log(String(obj));
+    }
+  };
+  console.group = (...args) => {
+    if (args.length > 0)
+      console.log(...args);
+  };
+  console.groupEnd = () => {};
+
+  // priv/ts/locks.ts
+  class LockManager {
+    async request(name, callbackOrOptions, maybeCallback) {
+      let options = {};
+      let callback;
+      if (typeof callbackOrOptions === "function") {
+        callback = callbackOrOptions;
+      } else {
+        options = callbackOrOptions;
+        callback = maybeCallback;
+      }
+      const mode = options.mode ?? "exclusive";
+      const ifAvailable = options.ifAvailable ?? false;
+      if (options.signal?.aborted) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+      const result = await beam.call("__locks_request", name, mode, ifAvailable);
+      if (result === "not_available") {
+        return await callback(null);
+      }
+      if (result === "holder_down") {
+        throw new DOMException("Lock holder terminated", "AbortError");
+      }
+      const lock = { name, mode };
+      try {
+        return await callback(lock);
+      } finally {
+        await beam.call("__locks_release", name);
+      }
+    }
+    async query() {
+      return await beam.call("__locks_query");
+    }
+  }
+  var lockManager = new LockManager;
+  var g = globalThis;
+  g.navigator = g.navigator ?? {};
+  g.navigator.locks = lockManager;
+
+  // priv/ts/storage.ts
+  class WebStorage {
+    getItem(key) {
+      return beam.callSync("__storage_get", String(key));
+    }
+    setItem(key, value) {
+      beam.callSync("__storage_set", String(key), String(value));
+    }
+    removeItem(key) {
+      beam.callSync("__storage_remove", String(key));
+    }
+    clear() {
+      beam.callSync("__storage_clear");
+    }
+    key(index) {
+      return beam.callSync("__storage_key", index);
+    }
+    get length() {
+      return beam.callSync("__storage_length");
+    }
+  }
+  globalThis.localStorage = new WebStorage;
+
+  // priv/ts/web-apis.ts
+  Object.assign(globalThis, {
+    DOMException,
+    Event,
+    MessageEvent,
+    CloseEvent,
+    ErrorEvent,
+    EventTarget,
+    AbortSignal,
+    AbortController,
+    ReadableStream,
+    ReadableStreamDefaultReader,
+    WritableStream,
+    WritableStreamDefaultWriter,
+    TransformStream,
+    TextEncoderStream,
+    TextDecoderStream,
+    Blob,
+    File,
+    Headers,
+    Request,
+    Response,
+    fetch: fetchImpl,
+    BroadcastChannel,
+    WebSocket,
+    Worker,
+    EventSource
+  });
 })();
