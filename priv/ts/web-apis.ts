@@ -7,3 +7,4 @@ import "./fetch";
 import "./broadcast-channel";
 import "./websocket";
 import "./console-ext";
+import "./worker";

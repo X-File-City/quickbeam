@@ -1280,4 +1280,78 @@
       console.log(...args);
   };
   console.groupEnd = () => {};
+
+  // priv/ts/worker.ts
+  var workerRegistry = new Map;
+
+  class QBWorker extends EventTarget {
+    #pid;
+    #terminated = false;
+    #earlyMessages = [];
+    #onmessage = null;
+    onerror = null;
+    constructor(script) {
+      super();
+      this.#pid = beam.callSync("__worker_spawn", script);
+      const pidKey = JSON.stringify(this.#pid);
+      workerRegistry.set(pidKey, this);
+    }
+    get onmessage() {
+      return this.#onmessage;
+    }
+    set onmessage(handler) {
+      this.#onmessage = handler;
+      if (handler && this.#earlyMessages.length > 0) {
+        const queued = this.#earlyMessages.splice(0);
+        for (const data of queued) {
+          this._dispatch(data);
+        }
+      }
+    }
+    postMessage(data) {
+      if (this.#terminated)
+        throw new DOMException("Worker has been terminated", "InvalidStateError");
+      beam.call("__worker_post", this.#pid, data);
+    }
+    terminate() {
+      if (this.#terminated)
+        return;
+      this.#terminated = true;
+      const pidKey = JSON.stringify(this.#pid);
+      workerRegistry.delete(pidKey);
+      beam.call("__worker_terminate", this.#pid);
+    }
+    _dispatch(data) {
+      if (!this.#onmessage) {
+        this.#earlyMessages.push(data);
+        return;
+      }
+      const event = new MessageEvent("message", { data });
+      this.dispatchEvent(event);
+      this.#onmessage({ data });
+    }
+    _error(message, error) {
+      const event = new ErrorEvent("error", { message });
+      this.dispatchEvent(event);
+      this.onerror?.({ message, error });
+    }
+  }
+  __qb_register_dispatcher((msg) => {
+    if (!Array.isArray(msg) || msg.length < 3)
+      return false;
+    const [type, pid, payload] = msg;
+    if (type !== "__worker_msg" && type !== "__worker_err")
+      return false;
+    const pidKey = JSON.stringify(pid);
+    const worker = workerRegistry.get(pidKey);
+    if (!worker)
+      return false;
+    if (type === "__worker_msg") {
+      worker._dispatch(payload);
+    } else {
+      worker._error(String(payload), payload);
+    }
+    return true;
+  });
+  globalThis.Worker = QBWorker;
 })();

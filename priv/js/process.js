@@ -22,6 +22,10 @@
     }
     userMessageHandler = handler;
   };
+  var internalDispatchers = [];
+  globalThis.__qb_register_dispatcher = (fn) => {
+    internalDispatchers.push(fn);
+  };
   originalOnMessage((msg) => {
     if (Array.isArray(msg) && msg.length === 3 && msg[0] === "__qb_down") {
       const [, id, reason] = msg;
@@ -31,6 +35,10 @@
         cb(reason);
       }
       return;
+    }
+    for (const dispatcher of internalDispatchers) {
+      if (dispatcher(msg))
+        return;
     }
     if (userMessageHandler) {
       userMessageHandler(msg);

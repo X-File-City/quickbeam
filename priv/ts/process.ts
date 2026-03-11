@@ -28,6 +28,13 @@ Process.onMessage = (handler: (msg: unknown) => void): void => {
   userMessageHandler = handler;
 };
 
+type InternalDispatcher = (msg: unknown) => boolean;
+const internalDispatchers: InternalDispatcher[] = [];
+
+(globalThis as Record<string, unknown>).__qb_register_dispatcher = (fn: InternalDispatcher) => {
+  internalDispatchers.push(fn);
+};
+
 originalOnMessage((msg: unknown) => {
   if (Array.isArray(msg) && msg.length === 3 && msg[0] === "__qb_down") {
     const [, id, reason] = msg;
@@ -37,6 +44,10 @@ originalOnMessage((msg: unknown) => {
       cb(reason);
     }
     return;
+  }
+
+  for (const dispatcher of internalDispatchers) {
+    if (dispatcher(msg)) return;
   }
 
   if (userMessageHandler) {
