@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+- Add atom cache for QuickJS↔BEAM boundary — pre-created JS strings for common atoms (`nil`, `true`, `false`, `NaN`, `Infinity`, `ok`, `error`, etc.) avoid repeated allocations on every conversion
+- Replace promise polling with direct `JS_PromiseState`/`JS_PromiseResult` inspection — removes temporary globals, eval overhead, and a per-iteration string leak
+
+### Fixes
+
+- Fix locks and BroadcastChannel tests failing when application is not started
+
 ## 0.1.0
 
 Initial release.
