@@ -50,7 +50,7 @@
     {
       "id": "zig-nif-layer",
       "title": "Zig NIF Layer — The Fast Path",
-      "description": "The Zig layer is where BEAM meets JavaScript. `quickbeam.zig` defines the NIF entry points. `worker.zig` runs the JS event loop on a dedicated OS thread — dequeuing BEAM messages, evaluating JS, draining microtasks, and firing timers. `beam_to_js.zig` and `js_to_beam.zig` handle zero-copy data conversion between BEAM terms and JS values without JSON serialization.",
+      "description": "The Zig layer is where BEAM meets JavaScript. quickbeam.zig defines the NIF entry points. worker.zig runs the JS event loop on a dedicated OS thread — dequeuing BEAM messages, evaluating JS, draining microtasks, and firing timers. beam_to_js.zig and js_to_beam.zig handle zero-copy data conversion between BEAM terms and JS values without JSON serialization.",
       "focusDirectory": "lib/quickbeam",
       "colorMode": "fileTypes",
       "highlightLayers": [
@@ -85,7 +85,7 @@
     {
       "id": "typescript-polyfills",
       "title": "TypeScript Web & Node APIs",
-      "description": "The `priv/ts/` directory contains pure TypeScript implementations of Web and Node.js APIs that are bundled into every runtime. These include fetch, WebSocket, EventTarget, Streams, BroadcastChannel, Workers, localStorage, crypto.subtle, and Node.js modules (fs, path, os, process). Each module delegates heavy work back to the BEAM via native bindings.",
+      "description": "The `priv/ts/` directory contains pure TypeScript implementations of Web and Node.js APIs that are bundled into every runtime. These include fetch, WebSocket, EventTarget, Streams, BroadcastChannel, Workers, localStorage, crypto.subtle, and Node.js modules. Each module delegates heavy work back to the BEAM via native bindings.",
       "focusDirectory": "priv/ts",
       "colorMode": "fileTypes",
       "highlightLayers": [
