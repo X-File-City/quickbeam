@@ -1,0 +1,166 @@
+{
+  "id": "quickbeam-intro",
+  "title": "QuickBEAM: JS Runtime on the BEAM",
+  "description": "A guided tour of QuickBEAM — a JavaScript runtime for Elixir/Erlang that embeds QuickJS with zero-copy data conversion, Web APIs backed by OTP, and a native DOM powered by lexbor.",
+  "version": "1.0.0",
+  "steps": [
+    {
+      "id": "overview",
+      "title": "Welcome to QuickBEAM",
+      "description": "QuickBEAM is a multi-language project spanning Elixir, Zig, TypeScript, and C. Each JS runtime is an OTP GenServer with a dedicated OS thread — no JSON serialization on the hot path, just direct BEAM↔JS value conversion. This tour walks through the major architectural layers.",
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "elixir-api",
+      "title": "Elixir Public API & OTP Layer",
+      "description": "The Elixir layer provides the user-facing API and OTP integration. `quickbeam.ex` is the main entry point with functions like start/eval/call. `runtime.ex` implements the GenServer managing each JS runtime's lifecycle. `pool.ex` enables efficient runtime reuse across requests. Web and Node.js APIs (fetch, fs, crypto, etc.) each have dedicated Elixir handler modules.",
+      "focusDirectory": "lib/quickbeam",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "core-elixir",
+          "name": "Core API",
+          "color": "#8b5cf6",
+          "items": [
+            { "path": "lib/quickbeam.ex", "type": "file" },
+            { "path": "lib/quickbeam/runtime.ex", "type": "file" },
+            { "path": "lib/quickbeam/native.ex", "type": "file" },
+            { "path": "lib/quickbeam/pool.ex", "type": "file" }
+          ],
+          "opacity": 0.8,
+          "renderStrategy": "border"
+        },
+        {
+          "id": "web-handlers",
+          "name": "Web/Node API Handlers",
+          "color": "#f59e0b",
+          "items": [
+            { "path": "lib/quickbeam/fetch.ex", "type": "file" },
+            { "path": "lib/quickbeam/worker_api.ex", "type": "file" },
+            { "path": "lib/quickbeam/broadcast_channel.ex", "type": "file" },
+            { "path": "lib/quickbeam/subtle_crypto.ex", "type": "file" },
+            { "path": "lib/quickbeam/node_fs.ex", "type": "file" },
+            { "path": "lib/quickbeam/storage.ex", "type": "file" }
+          ],
+          "opacity": 0.6,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "zig-nif-layer",
+      "title": "Zig NIF Layer — The Fast Path",
+      "description": "The Zig layer is where BEAM meets JavaScript. `quickbeam.zig` defines the NIF entry points. `worker.zig` runs the JS event loop on a dedicated OS thread — dequeuing BEAM messages, evaluating JS, draining microtasks, and firing timers. `beam_to_js.zig` and `js_to_beam.zig` handle zero-copy data conversion between BEAM terms and JS values without JSON serialization.",
+      "focusDirectory": "lib/quickbeam",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "zig-core",
+          "name": "Core Zig NIFs",
+          "color": "#ec4899",
+          "items": [
+            { "path": "lib/quickbeam/quickbeam.zig", "type": "file" },
+            { "path": "lib/quickbeam/worker.zig", "type": "file" },
+            { "path": "lib/quickbeam/types.zig", "type": "file" },
+            { "path": "lib/quickbeam/globals.zig", "type": "file" }
+          ],
+          "opacity": 0.8,
+          "renderStrategy": "border"
+        },
+        {
+          "id": "zig-conversion",
+          "name": "Data Conversion",
+          "color": "#06b6d4",
+          "items": [
+            { "path": "lib/quickbeam/beam_to_js.zig", "type": "file" },
+            { "path": "lib/quickbeam/js_to_beam.zig", "type": "file" },
+            { "path": "lib/quickbeam/beam_call.zig", "type": "file" },
+            { "path": "lib/quickbeam/atom_cache.zig", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "typescript-polyfills",
+      "title": "TypeScript Web & Node APIs",
+      "description": "The `priv/ts/` directory contains pure TypeScript implementations of Web and Node.js APIs that are bundled into every runtime. These include fetch, WebSocket, EventTarget, Streams, BroadcastChannel, Workers, localStorage, crypto.subtle, and Node.js modules (fs, path, os, process). Each module delegates heavy work back to the BEAM via native bindings.",
+      "focusDirectory": "priv/ts",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "ts-web-apis",
+          "name": "Web APIs",
+          "color": "#3b82f6",
+          "items": [
+            { "path": "priv/ts/fetch.ts", "type": "file" },
+            { "path": "priv/ts/websocket.ts", "type": "file" },
+            { "path": "priv/ts/event-target.ts", "type": "file" },
+            { "path": "priv/ts/streams.ts", "type": "file" },
+            { "path": "priv/ts/worker.ts", "type": "file" },
+            { "path": "priv/ts/broadcast-channel.ts", "type": "file" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "border"
+        },
+        {
+          "id": "ts-beam-bridge",
+          "name": "BEAM Bridge",
+          "color": "#10b981",
+          "items": [
+            { "path": "priv/ts/beam-api.ts", "type": "file" },
+            { "path": "priv/ts/beam-proxy.ts", "type": "file" },
+            { "path": "priv/ts/quickbeam.d.ts", "type": "file" }
+          ],
+          "opacity": 0.8,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "c-libraries",
+      "title": "C Libraries — QuickJS & lexbor",
+      "description": "The C layer provides the JavaScript engine (QuickJS-NG) and a real HTML/DOM parser (lexbor). QuickJS is a lightweight, embeddable JS engine with ES2023 support. Lexbor gives QuickBEAM a native DOM — not a polyfill — enabling real document manipulation and server-side rendering. These are compiled and linked via Zigler.",
+      "focusDirectory": "priv/c_src",
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "test-suite",
+      "title": "Comprehensive Test Suite",
+      "description": "Tests are organized by feature area: `core/` for runtime fundamentals (eval, concurrency, memory, supervision), `web_apis/` for fetch, WebSocket, streams, crypto, and more, `dom/` for DOM manipulation, `node/` for Node.js API compatibility, and `wpt/` for Web Platform Test compliance. The WPT tests verify QuickBEAM against the same specs that browsers use.",
+      "focusDirectory": "test",
+      "colorMode": "fileTypes",
+      "highlightLayers": [
+        {
+          "id": "test-areas",
+          "name": "Test Categories",
+          "color": "#22c55e",
+          "items": [
+            { "path": "test/core", "type": "directory" },
+            { "path": "test/web_apis", "type": "directory" },
+            { "path": "test/dom", "type": "directory" },
+            { "path": "test/wpt", "type": "directory" },
+            { "path": "test/node", "type": "directory" }
+          ],
+          "opacity": 0.7,
+          "renderStrategy": "border"
+        }
+      ]
+    },
+    {
+      "id": "examples",
+      "title": "Example Applications",
+      "description": "Three examples demonstrate real-world use cases: `ssr/` shows Preact server-side rendering with runtime pooling and native DOM reading. `rule_engine/` demonstrates sandboxed user-defined business logic with memory limits and restricted APIs. `live_dashboard/` uses Workers and BroadcastChannel for real-time parallel computation.",
+      "focusDirectory": "examples",
+      "colorMode": "fileTypes"
+    },
+    {
+      "id": "full-picture",
+      "title": "The Full Picture",
+      "description": "QuickBEAM bridges four languages into a cohesive system: Elixir for OTP supervision and API handling, Zig for lock-free NIF interop, TypeScript for standards-compliant Web APIs, and C for the JS engine and DOM parser. Each runtime is a GenServer, each Worker is a BEAM process, and every API call flows through OTP — bringing the reliability of the BEAM to the JavaScript ecosystem.",
+      "focusDirectory": "",
+      "colorMode": "fileTypes"
+    }
+  ]
+}
